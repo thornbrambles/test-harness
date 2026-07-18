@@ -16,12 +16,19 @@ if [ "$RETRY" -gt 0 ]; then
     -q '.comments[] | select(.body | startswith("REASON:")) | .body' | tail -3)"
 fi
 
-git checkout -B "$BRANCH" main >/dev/null 2>&1 || git checkout "$BRANCH" >/dev/null
+if [ "$RETRY" -gt 0 ]; then
+  # Retries continue on the existing branch so commits accumulate across
+  # attempts (needed for the gate.sh oscillation check). Only fall back to
+  # resetting from main if the branch doesn't exist locally yet.
+  git checkout "$BRANCH" >/dev/null 2>&1 || git checkout -B "$BRANCH" main >/dev/null
+else
+  git checkout -B "$BRANCH" main >/dev/null
+fi
 
 # Static substitutions via sed, dynamic ones via bash string replace below.
 PROMPT="$(sed \
   -e "s/{{ISSUE_NUMBER}}/$ISSUE/" \
-  -e "s/{{BRANCH_NAME}}/$BRANCH/" \
+  -e "s#{{BRANCH_NAME}}#$BRANCH#" \
   -e "s/{{RETRY_COUNT}}/$RETRY/" \
   -e "s#{{FORBIDDEN_PATH_REGEX}}#$FORBIDDEN_PATH_REGEX#" \
   "$DIR/../prompts/builder.md")"
