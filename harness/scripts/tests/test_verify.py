@@ -88,5 +88,76 @@ class PreFixTestOutputTest(unittest.TestCase):
         self.assertIn("skipped", output)
 
 
+class DetectTestCmdPythonFallbackTest(unittest.TestCase):
+    """Without a package.json test script or run_tests.sh, a nested
+    test_*.py layout must still be picked up (issue #2 retry feedback: this
+    repo has neither, so the post-fix full-suite run reported "no test
+    runner detected" and never touched the new tests)."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
+        tests_dir = self.tmpdir / "scripts" / "tests"
+        tests_dir.mkdir(parents=True)
+        (tests_dir / "test_thing.py").write_text("import unittest\n", encoding="utf-8")
+
+    def test_finds_nested_python_unittest_layout(self):
+        old_cwd = os.getcwd()
+        os.chdir(self.tmpdir)
+        try:
+            cmd = verify.detect_test_cmd()
+        finally:
+            os.chdir(old_cwd)
+        self.assertIsNotNone(cmd)
+        self.assertEqual(cmd[:4], ["python", "-m", "unittest", "discover"])
+        self.assertEqual(Path(cmd[5]).name, "tests")
+
+
+class PreFixTestOutputPythonDispatchTest(unittest.TestCase):
+    """A changed .py test file must run via the Python interpreter, not fall
+    through to the npx/jest branch meant for JS tests (issue #2 retry
+    feedback: that fallback broke pre-fix evidence for non-JS test files)."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
+
+        _git(self.tmpdir, "init", "-q")
+        _git(self.tmpdir, "config", "user.email", "test@example.com")
+        _git(self.tmpdir, "config", "user.name", "Test")
+
+        (self.tmpdir / "src.txt").write_text("OLD_SOURCE\n", encoding="utf-8")
+        (self.tmpdir / "mytest.py").write_text(
+            "print('OLD_TEST_MARKER')\n", encoding="utf-8"
+        )
+        _git(self.tmpdir, "add", ".")
+        _git(self.tmpdir, "commit", "-q", "-m", "base")
+        _git(self.tmpdir, "branch", "base")
+
+        _git(self.tmpdir, "checkout", "-q", "-b", "fix")
+        (self.tmpdir / "src.txt").write_text("NEW_SOURCE\n", encoding="utf-8")
+        (self.tmpdir / "mytest.py").write_text(
+            "print(open('src.txt', encoding='utf-8').read())\n", encoding="utf-8"
+        )
+        _git(self.tmpdir, "add", ".")
+        _git(self.tmpdir, "commit", "-q", "-m", "fix")
+
+    def _run_in_repo(self, fn):
+        old_cwd = os.getcwd()
+        os.chdir(self.tmpdir)
+        try:
+            return fn()
+        finally:
+            os.chdir(old_cwd)
+
+    def test_dispatches_py_test_files_via_python_not_jest(self):
+        output = self._run_in_repo(
+            lambda: verify.pre_fix_test_output("base", "fix", ["mytest.py"])
+        )
+        self.assertIn("OLD_SOURCE", output)
+        self.assertNotIn("OLD_TEST_MARKER", output)
+        self.assertNotIn("Could not find a config file", output)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -17,10 +17,20 @@ PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 TEST_FILE_RE = re.compile(r"test|spec", re.IGNORECASE)
 
 
+def _shallow_glob(pattern: str, max_depth: int = 4):
+    for candidate in Path(".").glob(f"**/{pattern}"):
+        parts = candidate.parts
+        if "node_modules" in parts or ".git" in parts:
+            continue
+        if len(parts) <= max_depth:
+            yield candidate
+
+
 def detect_test_cmd() -> list[str] | None:
-    """Prefer an npm "test" script if present, else fall back to a
-    run_tests.sh entrypoint (searched a few levels deep to allow a nested
-    harness/ layout), instead of assuming npm/jest like the old script did."""
+    """Prefer an npm "test" script if present, else a run_tests.sh
+    entrypoint, else a Python unittest layout (test_*.py under a tests/
+    dir), searched a few levels deep to allow a nested harness/ layout --
+    instead of assuming npm/jest like the old script did."""
     pkg = Path("package.json")
     if pkg.exists():
         try:
@@ -28,12 +38,10 @@ def detect_test_cmd() -> list[str] | None:
                 return ["npm", "test"]
         except json.JSONDecodeError:
             pass
-    for candidate in Path(".").glob("**/run_tests.sh"):
-        parts = candidate.parts
-        if "node_modules" in parts or ".git" in parts:
-            continue
-        if len(parts) <= 4:
-            return ["bash", str(candidate)]
+    for candidate in _shallow_glob("run_tests.sh"):
+        return ["bash", str(candidate)]
+    for candidate in _shallow_glob("test_*.py"):
+        return ["python", "-m", "unittest", "discover", "-s", str(candidate.parent), "-p", "test_*.py"]
     return None
 
 
@@ -67,6 +75,8 @@ def pre_fix_test_output(base: str, branch: str, test_files: list[str]) -> str:
             continue
         if f.endswith(".sh"):
             result = lib.run(["bash", f])
+        elif f.endswith(".py"):
+            result = lib.run(["python", f])
         else:
             result = lib.run(["npx", "jest", f])
         chunks.append(f"--- {f} ---\n{result.stdout + result.stderr}")
