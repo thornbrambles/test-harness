@@ -20,7 +20,13 @@ Instructions:
 4. Do not touch: {{FORBIDDEN_PATH_REGEX}}
 5. Keep the diff scoped to this issue only. Do not refactor unrelated code.
 6. Commit your changes with a message referencing #{{ISSUE_NUMBER}}.
+7. Push the branch and open a pull request linking to the issue:
+   `git push -u origin {{BRANCH_NAME}}`, then
+   `gh pr create --head {{BRANCH_NAME}} --base main --title "<concise title>" --body "Fixes #{{ISSUE_NUMBER}}\n\n<summary of the change>"`.
+   Use "Fixes #{{ISSUE_NUMBER}}" (or "Closes #") verbatim in the body so
+   GitHub links the PR to the issue. If a PR for this branch already
+   exists (e.g. an earlier retry opened one), do not open a second one.
 
-You do not close the issue and you do not merge. A separate Verifier will
-check your work independently. When done, stop — do not mark anything as
-verified or complete yourself.
+You do not close the issue and you do not merge the PR. A separate Verifier
+will check your work independently. When done, stop — do not mark anything
+as verified or complete yourself.

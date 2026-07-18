@@ -4,15 +4,14 @@ Four agents (Scanner, Builder, Verifier, Tuner) + one deterministic gate +
 one Overseer circuit breaker, coordinated through GitHub Issue labels.
 
 ## Requirements
+- Python 3.10+
 - `gh` CLI, authenticated, run from inside the target repo
 - `claude` CLI (Claude Code), authenticated
-- `jq`
 
 ## Setup
 ```bash
 cp config.env.example config.env   # edit thresholds
-chmod +x scripts/*.sh
-./scripts/run.sh                    # starts the daemon loop
+python3 scripts/run.py             # starts the daemon loop
 ```
 
 To feed in a new feature request at any time:
@@ -34,13 +33,18 @@ Plus a `retry:N` label tracking attempt count per issue.
 ## Files
 - `prompts/*.md` — the actual instructions given to each agent. Only the
   Tuner is allowed to propose edits to these, and only via PR.
-- `scripts/gate.sh` — deterministic pre-checks (no LLM). Must pass before
-  the Verifier agent is even invoked.
-- `scripts/scan.sh`, `build.sh`, `verify.sh`, `tune.sh` — one `claude -p`
+- `scripts/lib.py` — shared helpers: config loading, state/log I/O, the
+  gh-backed issue state machine, and a non-shell subprocess wrapper (every
+  git/gh/claude call uses argument lists, never a shell string).
+- `scripts/gate.py` — deterministic pre-checks (no LLM). Must pass before
+  the Verifier agent is even invoked. Importable (`check_gate()`) or
+  runnable standalone.
+- `scripts/scan.py`, `build.py`, `verify.py`, `tune.py` — one `claude -p`
   call each, scoped to a single job.
-- `scripts/overseer.sh` — reads `.harness/log.jsonl`, enforces global
-  thresholds, can write `.harness/halt.lock` to pause everything.
-- `scripts/run.sh` — the daemon loop tying it all together.
+- `scripts/overseer.py` — reads `.harness/log.jsonl`, enforces global
+  thresholds (including the human-reopen check), can write
+  `.harness/halt.lock` to pause everything.
+- `scripts/run.py` — the daemon loop tying it all together.
 - `.harness/log.jsonl` — append-only event log every script writes to.
 - `.harness/state.json` — running counters (daily cost, backlog size, etc).
 
