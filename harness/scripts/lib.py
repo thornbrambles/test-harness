@@ -17,7 +17,12 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-HARNESS_DIR = Path(os.environ.get("HARNESS_DIR", ".harness"))
+
+# Resolved to an absolute path *now*, at import time -- before any later
+# os.chdir() (verify.py changes cwd into an isolated worktree mid-run).
+# A relative Path here would silently re-resolve against whatever the
+# process's cwd happens to be at each file access.
+HARNESS_DIR = Path(os.environ.get("HARNESS_DIR", ".harness")).resolve()
 LOG_FILE = HARNESS_DIR / "log.jsonl"
 STATE_FILE = HARNESS_DIR / "state.json"
 HALT_FILE = HARNESS_DIR / "halt.lock"
@@ -36,6 +41,11 @@ def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     launched program, which keeps this an argv list, not a shell string."""
     kwargs.setdefault("text", True)
     kwargs.setdefault("capture_output", True)
+    # Force UTF-8 explicitly: text=True alone uses the platform locale
+    # encoding (cp1252 on Windows), which chokes on non-ASCII bytes gh/git
+    # output routinely contains (e.g. an em dash in an issue comment).
+    kwargs.setdefault("encoding", "utf-8")
+    kwargs.setdefault("errors", "replace")
     resolved = shutil.which(cmd[0])
     if resolved:
         cmd = [resolved, *cmd[1:]]
