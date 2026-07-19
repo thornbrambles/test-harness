@@ -52,20 +52,23 @@ class TunePrDecisionTest(unittest.TestCase):
         self.prompts_dir_patch.start()
         self.addCleanup(self.prompts_dir_patch.stop)
 
-    def _fake_run(self, make_change):
+    def _fake_run(self, make_change, fail_checkout=False):
         def _run(cmd, **kwargs):
             if cmd[0] == "git":
+                if fail_checkout and cmd[1:3] == ["checkout", "-B"]:
+                    return SimpleNamespace(returncode=1, stdout="", stderr="fatal: unable to checkout")
                 return subprocess.run(cmd, cwd=self.repo_dir, text=True, capture_output=True)
-            if cmd[0] == "claude" and make_change:
-                # Simulate the Tuner agent editing a tracked prompt file
-                # without necessarily committing it -- tune.py's diff check
-                # runs against the working tree either way.
-                (self.repo_dir / "prompts" / "tuner.md").write_text("changed\n", encoding="utf-8")
+            if cmd[0] == "claude":
+                if make_change:
+                    # Simulate the Tuner agent editing a tracked prompt file
+                    # without necessarily committing it -- tune.py's diff check
+                    # runs against the working tree either way.
+                    (self.repo_dir / "prompts" / "tuner.md").write_text("changed\n", encoding="utf-8")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return _run
 
-    def _run_tune(self, make_change):
-        with mock.patch.object(lib, "run", side_effect=self._fake_run(make_change)), \
+    def _run_tune(self, make_change, fail_checkout=False):
+        with mock.patch.object(lib, "run", side_effect=self._fake_run(make_change, fail_checkout)), \
              mock.patch.object(lib, "is_halted", return_value=False), \
              mock.patch.object(lib, "bump_counter"), \
              mock.patch.object(lib, "log_event") as mock_log, \
@@ -89,6 +92,30 @@ class TunePrDecisionTest(unittest.TestCase):
         logged_events = [c.args[0] for c in mock_log.call_args_list]
         self.assertIn("tune_pr_opened", logged_events)
         self.assertNotIn("tune_no_change", logged_events)
+        self.assertEqual(_current_branch(self.repo_dir), "main")
+
+    def test_checkout_failure_aborts_before_agent(self):
+        # If `git checkout -B branch main` fails silently, tune.py used to
+        # fall through and invoke the Tuner agent anyway with HEAD still on
+        # main -- any commit it made would land directly on main (issue #65).
+        calls = []
+
+        def _run(cmd, **kwargs):
+            calls.append(cmd)
+            return self._fake_run(make_change=True, fail_checkout=True)(cmd, **kwargs)
+
+        with mock.patch.object(lib, "run", side_effect=_run), \
+             mock.patch.object(lib, "is_halted", return_value=False), \
+             mock.patch.object(lib, "bump_counter"), \
+             mock.patch.object(lib, "log_event") as mock_log, \
+             mock.patch.object(sys, "argv", ["tune.py"]):
+            rc = tune.main()
+
+        self.assertEqual(rc, 1)
+        logged_events = [c.args[0] for c in mock_log.call_args_list]
+        self.assertIn("tune_checkout_failed", logged_events)
+        self.assertFalse(any(cmd[0] == "claude" for cmd in calls))
+        self.assertFalse(any(cmd[:2] == ["git", "push"] for cmd in calls))
         self.assertEqual(_current_branch(self.repo_dir), "main")
 
 
