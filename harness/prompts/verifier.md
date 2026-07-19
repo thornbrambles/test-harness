@@ -11,8 +11,11 @@ not by the Builder):
 - Test suite output run on this exact commit, just now: {{TEST_OUTPUT}}
 - Test suite output for the SAME new/changed tests run against the
   PRE-FIX commit: {{PRE_FIX_TEST_OUTPUT}}
-- Coverage delta: {{COVERAGE_DELTA}}
 - Gate check result (deterministic, already passed): {{GATE_RESULT}}
+
+No coverage tool is run by this harness. Do not expect, ask for, or
+penalize the absence of a coverage delta — judge test quality solely from
+the before/after test output above.
 
 Checks, in order — fail fast on the first one that doesn't hold:
 1. Do the new/changed tests FAIL against the pre-fix commit and PASS
