@@ -16,6 +16,7 @@ import lib
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
 _COND_BLOCK_RE = re.compile(r"\{\{#(\w+)\}\}(.*?)\{\{/\1\}\}", re.DOTALL)
+_PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
 
 
 def render(template: str, values: dict[str, str]) -> str:
@@ -30,9 +31,15 @@ def render(template: str, values: dict[str, str]) -> str:
         return ""
 
     out = _COND_BLOCK_RE.sub(_cond, template)
-    for key, value in values.items():
-        out = out.replace(f"{{{{{key}}}}}", value)
-    return out
+
+    # Single-pass substitution: replacement text must never be re-scanned
+    # for further {{KEY}} matches, or a placeholder token embedded in one
+    # value (e.g. user-controlled ISSUE_BODY) could get expanded by a later
+    # key's substitution (see issue #39).
+    def _sub(match: re.Match) -> str:
+        return values.get(match.group(1), match.group(0))
+
+    return _PLACEHOLDER_RE.sub(_sub, out)
 
 
 def get_prior_feedback(issue) -> str:
