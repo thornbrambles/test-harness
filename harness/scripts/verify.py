@@ -13,6 +13,15 @@ from pathlib import Path
 import gate
 import lib
 
+# Resolved from wherever *this* process's own files live (the daemon's
+# persistent checkout, normally main), not from the `git worktree add`
+# checkout of the branch being verified further down in main(). That's
+# deliberate: verify.py, gate.py, and this template are the trusted
+# reviewer, so a branch can't rewrite its own review criteria (e.g. this
+# very file's prompt) and have that take effect before the branch merges.
+# A fix here to verify.py/verifier.md is validated by the unit tests below
+# immediately, but a live Verifier run won't visibly use the new prompt
+# text until this PR is merged into main -- that's expected, not a bug.
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
 
@@ -126,7 +135,6 @@ def main() -> int:
             test_output = run_test_cmd(detect_test_cmd())
             test_files = changed_test_files(base, branch)
             pre_fix_output = pre_fix_test_output(base, branch, test_files)
-            coverage_delta = "see coverage tool output in TEST_OUTPUT above"
 
             template = PROMPTS_DIR.joinpath("verifier.md").read_text(encoding="utf-8")
             prompt = (
@@ -134,7 +142,6 @@ def main() -> int:
                 .replace("{{BRANCH_NAME}}", branch)
                 .replace("{{TEST_OUTPUT}}", test_output)
                 .replace("{{PRE_FIX_TEST_OUTPUT}}", pre_fix_output)
-                .replace("{{COVERAGE_DELTA}}", coverage_delta)
                 .replace("{{GATE_RESULT}}", "PASS")
             )
 
