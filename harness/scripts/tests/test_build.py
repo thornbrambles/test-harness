@@ -17,6 +17,7 @@ regardless of the fix under test.
 """
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
@@ -184,6 +185,101 @@ class BuildInfraFailureTest(unittest.TestCase):
         logged_events = [c.args[0] for c in mock_log.call_args_list]
         self.assertIn("build_complete", logged_events)
         self.assertNotIn("build_infra_failure", logged_events)
+
+
+class RetryReusesBranchTest(unittest.TestCase):
+    """Tests for issue #86: every existing test mocks .labels[].name to
+    return an empty string, so retry is always 0 and build.main()'s
+    retry > 0 branch (get_prior_feedback + branch-reuse checkout) never
+    runs in any test. These tests set retry:1 and assert: (1)
+    get_prior_feedback's result is fetched and lands in the rendered
+    prompt handed to claude, and (2) when the issue branch already exists,
+    it's reused via `git checkout <branch>` rather than recreated via
+    `git checkout -B <branch> main` -- the mechanism gate.py's oscillation
+    check depends on to see commits accumulate across retries."""
+
+    def setUp(self):
+        self.repo_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.repo_dir, ignore_errors=True))
+
+        _git(self.repo_dir, "init", "-q")
+        _git(self.repo_dir, "config", "user.email", "test@example.com")
+        _git(self.repo_dir, "config", "user.name", "Test")
+        (self.repo_dir / "file.txt").write_text("base\n", encoding="utf-8")
+        _git(self.repo_dir, "add", ".")
+        _git(self.repo_dir, "commit", "-q", "-m", "base")
+        _git(self.repo_dir, "branch", "-M", "main")
+
+        # Pre-create the issue branch with a commit on it, simulating a
+        # prior build attempt, so a reused checkout has something to keep.
+        _git(self.repo_dir, "checkout", "-b", "auto/issue-1")
+        (self.repo_dir / "file.txt").write_text("attempt-1\n", encoding="utf-8")
+        _git(self.repo_dir, "add", ".")
+        _git(self.repo_dir, "commit", "-q", "-m", "prior attempt commit")
+        self.prior_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True, capture_output=True, check=True
+        ).stdout.strip()
+        _git(self.repo_dir, "checkout", "main")
+
+        self.claude_prompts = []
+        self.git_checkout_args = []
+
+    def _fake_run(self, cmd, **kwargs):
+        if cmd[0] == "git":
+            if cmd[1] == "checkout":
+                self.git_checkout_args.append(cmd[1:])
+            return subprocess.run(cmd, cwd=self.repo_dir, text=True, capture_output=True)
+        if cmd[0] == "gh" and cmd[-1] == ".labels[].name":
+            return SimpleNamespace(returncode=0, stdout="retry:1\n", stderr="")
+        if cmd[0] == "gh" and cmd[-1] == ".body":
+            return SimpleNamespace(returncode=0, stdout="Fix the widget.\n", stderr="")
+        if cmd[0] == "gh" and "--json" in cmd and "comments" in cmd:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"comments": [{"body": "REASON: it broke the widget"}]}),
+                stderr="",
+            )
+        if cmd[0] == "claude":
+            self.claude_prompts.append(cmd[2])
+            (self.repo_dir / "file.txt").write_text("fixed\n", encoding="utf-8")
+            _git(self.repo_dir, "add", ".")
+            _git(self.repo_dir, "commit", "-q", "-m", "builder commit")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        # gh issue edit/comment, git push (no remote configured in this
+        # throwaway repo) -- none of these are asserted on here.
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def test_retry_fetches_prior_feedback_and_renders_it_into_prompt(self):
+        with mock.patch.object(lib, "run", side_effect=self._fake_run), \
+             mock.patch.object(lib, "load_config", return_value={"FORBIDDEN_PATH_REGEX": "migrations/"}), \
+             mock.patch.object(lib, "bump_counter"), \
+             mock.patch.object(lib, "log_event"), \
+             mock.patch.object(sys, "argv", ["build.py", "1"]):
+            rc = build.main()
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(self.claude_prompts), 1)
+        self.assertIn("REASON: it broke the widget", self.claude_prompts[0])
+
+    def test_retry_reuses_existing_branch_instead_of_recreating_from_main(self):
+        with mock.patch.object(lib, "run", side_effect=self._fake_run), \
+             mock.patch.object(lib, "load_config", return_value={"FORBIDDEN_PATH_REGEX": "migrations/"}), \
+             mock.patch.object(lib, "bump_counter"), \
+             mock.patch.object(lib, "log_event"), \
+             mock.patch.object(sys, "argv", ["build.py", "1"]):
+            build.main()
+
+        # `git checkout auto/issue-1` (reuse), never `git checkout -B
+        # auto/issue-1 main` (recreate from main) -- that would discard the
+        # prior attempt's commit and break gate.py's oscillation check.
+        self.assertIn(["checkout", "auto/issue-1"], self.git_checkout_args)
+        self.assertNotIn(["checkout", "-B", "auto/issue-1", "main"], self.git_checkout_args)
+
+        log = subprocess.run(
+            ["git", "log", "--format=%H", "auto/issue-1"],
+            cwd=self.repo_dir, text=True, capture_output=True, check=True,
+        ).stdout.splitlines()
+        self.assertIn(self.prior_sha, log)
 
 
 class RenderSinglePassSubstitutionTest(unittest.TestCase):
