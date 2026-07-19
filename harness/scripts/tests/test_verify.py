@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Tests for verify.pre_fix_test_output (issue #2).
+"""Tests for verify.py: pre_fix_test_output (issue #2) and the main()
+decision logic that acts on gate/verdict results (issue #62).
 
 A repo-wide `git checkout <base> -- .` reverts every tracked file back to
 the pre-fix commit, including the changed test file(s) themselves whenever
@@ -299,6 +300,155 @@ class WorktreeAddFailureTest(unittest.TestCase):
 
         self.assertEqual(rc, 1)
         mock_check_gate.assert_not_called()
+
+
+class _MainPipelineTestBase(unittest.TestCase):
+    """Shared fixture for driving verify.main() through the post-gate
+    decision logic (verify.py:150-185) with gate.check_gate mocked out (its
+    own behavior is covered separately) and every `gh`/`claude` call
+    intercepted, while `git worktree add/remove` and `git diff` run for
+    real against a throwaway repo -- so main() exercises its actual control
+    flow instead of a hand-rolled stand-in for it."""
+
+    issue = "62"
+    branch = "auto/issue-62"
+
+    def setUp(self):
+        self.repo_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.repo_dir, ignore_errors=True))
+
+        _git(self.repo_dir, "init", "-q")
+        _git(self.repo_dir, "config", "user.email", "test@example.com")
+        _git(self.repo_dir, "config", "user.name", "Test")
+        (self.repo_dir / "file.txt").write_text("base\n", encoding="utf-8")
+        _git(self.repo_dir, "add", ".")
+        _git(self.repo_dir, "commit", "-q", "-m", "base")
+        _git(self.repo_dir, "branch", "-M", "main")
+
+        _git(self.repo_dir, "checkout", "-q", "-b", self.branch)
+        (self.repo_dir / "file.txt").write_text("fixed\n", encoding="utf-8")
+        _git(self.repo_dir, "add", ".")
+        _git(self.repo_dir, "commit", "-q", "-m", "fix")
+        # Leave "main" checked out in the primary tree so `git worktree add`
+        # for self.branch below succeeds (mirrors real daemon usage).
+        _git(self.repo_dir, "checkout", "-q", "main")
+
+        self.gh_calls = []
+        self.old_cwd = os.getcwd()
+        os.chdir(self.repo_dir)
+        self.addCleanup(lambda: os.chdir(self.old_cwd))
+
+    def _fake_run(self, cmd, **kwargs):
+        if cmd[0] == "git":
+            return subprocess.run(cmd, text=True, capture_output=True, encoding="utf-8")
+        if cmd[0] == "claude":
+            return SimpleNamespace(returncode=0, stdout=self.verdict_text, stderr="")
+        if cmd[0] == "gh":
+            self.gh_calls.append(cmd)
+            if cmd[:4] == ["gh", "pr", "list", "--head"]:
+                return SimpleNamespace(returncode=0, stdout=self.existing_pr_num, stderr="")
+            if cmd[:3] == ["gh", "issue", "view"]:
+                return SimpleNamespace(returncode=0, stdout=self.retry_label, stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def _run_main(self):
+        with mock.patch.object(lib, "run", side_effect=self._fake_run), \
+             mock.patch.object(lib, "load_config", return_value={"MAX_RETRIES": "3"}), \
+             mock.patch.object(lib, "log_event"), \
+             mock.patch.object(lib, "bump_counter"), \
+             mock.patch.object(gate, "check_gate", return_value=(True, "")), \
+             mock.patch.object(sys, "argv", ["verify.py", self.issue, self.branch]):
+            return verify.main()
+
+    def _gh_call(self, *prefix):
+        for cmd in self.gh_calls:
+            if cmd[: len(prefix)] == list(prefix):
+                return cmd
+        return None
+
+
+class MainApproveTest(_MainPipelineTestBase):
+    """VERDICT: APPROVE with no existing open PR must create the PR, squash-
+    merge it, and close the issue (verify.py:157-170) -- the exact sequence
+    issue #13 flags as unverified today."""
+
+    verdict_text = "VERDICT: APPROVE\nLooks good.\n"
+    existing_pr_num = ""
+    retry_label = ""
+
+    def test_approve_creates_merges_and_closes(self):
+        rc = self._run_main()
+
+        self.assertEqual(rc, 0)
+        self.assertIsNotNone(self._gh_call("gh", "pr", "create"))
+        merge_call = self._gh_call("gh", "pr", "merge", self.branch, "--squash", "--delete-branch")
+        self.assertIsNotNone(merge_call)
+        close_call = self._gh_call("gh", "issue", "close", self.issue)
+        self.assertIsNotNone(close_call)
+
+
+class MainApproveExistingPrTest(_MainPipelineTestBase):
+    """When a PR already exists for the branch, APPROVE must comment on it
+    instead of creating a duplicate, but still squash-merge and close."""
+
+    verdict_text = "VERDICT: APPROVE\n"
+    existing_pr_num = "5"
+    retry_label = ""
+
+    def test_approve_with_existing_pr_comments_instead_of_creating(self):
+        rc = self._run_main()
+
+        self.assertEqual(rc, 0)
+        self.assertIsNone(self._gh_call("gh", "pr", "create"))
+        self.assertIsNotNone(self._gh_call("gh", "pr", "comment", "5"))
+        self.assertIsNotNone(
+            self._gh_call("gh", "pr", "merge", self.branch, "--squash", "--delete-branch")
+        )
+
+
+class MainRejectRetryTest(_MainPipelineTestBase):
+    """VERDICT: REJECT below MAX_RETRIES must bump the retry:N label and
+    route back to state:ready, not state:needs-human (verify.py:172-185)."""
+
+    verdict_text = "VERDICT: REJECT\nREASON: the new test does not fail on old code\n"
+    existing_pr_num = ""
+    retry_label = "retry:0"
+
+    def test_reject_under_max_retries_bumps_retry_and_stays_ready(self):
+        rc = self._run_main()
+
+        self.assertEqual(rc, 1)
+        self.assertIsNotNone(self._gh_call("gh", "issue", "edit", self.issue, "--add-label", "retry:1"))
+        self.assertIsNotNone(
+            self._gh_call("gh", "issue", "edit", self.issue, "--add-label", "state:ready")
+        )
+        self.assertIsNone(
+            self._gh_call("gh", "issue", "edit", self.issue, "--add-label", "state:needs-human")
+        )
+        comment_call = self._gh_call("gh", "issue", "comment", self.issue)
+        self.assertIn("REASON: the new test does not fail on old code", comment_call[-1])
+
+
+class MainRejectMaxRetriesTest(_MainPipelineTestBase):
+    """VERDICT: REJECT once new_retry reaches MAX_RETRIES (3) must route to
+    state:needs-human instead of bumping the retry label further."""
+
+    verdict_text = "VERDICT: REJECT\nREASON: still broken\n"
+    existing_pr_num = ""
+    retry_label = "retry:2"
+
+    def test_reject_at_max_retries_routes_to_needs_human(self):
+        rc = self._run_main()
+
+        self.assertEqual(rc, 1)
+        self.assertIsNotNone(
+            self._gh_call("gh", "issue", "edit", self.issue, "--add-label", "state:needs-human")
+        )
+        self.assertIsNone(
+            self._gh_call("gh", "issue", "edit", self.issue, "--add-label", "state:ready")
+        )
+        self.assertIsNone(self._gh_call("gh", "issue", "edit", self.issue, "--add-label", "retry:3"))
 
 
 if __name__ == "__main__":
