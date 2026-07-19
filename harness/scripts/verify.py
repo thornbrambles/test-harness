@@ -126,7 +126,6 @@ def main() -> int:
             test_output = run_test_cmd(detect_test_cmd())
             test_files = changed_test_files(base, branch)
             pre_fix_output = pre_fix_test_output(base, branch, test_files)
-            coverage_delta = "see coverage tool output in TEST_OUTPUT above"
 
             template = PROMPTS_DIR.joinpath("verifier.md").read_text(encoding="utf-8")
             prompt = (
@@ -134,7 +133,6 @@ def main() -> int:
                 .replace("{{BRANCH_NAME}}", branch)
                 .replace("{{TEST_OUTPUT}}", test_output)
                 .replace("{{PRE_FIX_TEST_OUTPUT}}", pre_fix_output)
-                .replace("{{COVERAGE_DELTA}}", coverage_delta)
                 .replace("{{GATE_RESULT}}", "PASS")
             )
 

@@ -301,5 +301,59 @@ class WorktreeAddFailureTest(unittest.TestCase):
         mock_check_gate.assert_not_called()
 
 
+class CoveragePromptTest(unittest.TestCase):
+    """Issue #42: verify.py used to hardcode a fixed coverage-delta string
+    and feed it into the Verifier prompt's {{COVERAGE_DELTA}} slot as if it
+    were real output from a coverage tool -- but no coverage tool is ever
+    run anywhere in the codebase. The prompt actually sent to the Verifier
+    must not carry that fabricated claim."""
+
+    def setUp(self):
+        self.repo_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.repo_dir, ignore_errors=True))
+
+        _git(self.repo_dir, "init", "-q")
+        _git(self.repo_dir, "config", "user.email", "test@example.com")
+        _git(self.repo_dir, "config", "user.name", "Test")
+        (self.repo_dir / "file.txt").write_text("base\n", encoding="utf-8")
+        _git(self.repo_dir, "add", ".")
+        _git(self.repo_dir, "commit", "-q", "-m", "base")
+        _git(self.repo_dir, "branch", "-M", "main")
+
+        _git(self.repo_dir, "checkout", "-q", "-b", "auto/issue-42")
+        (self.repo_dir / "file.txt").write_text("fixed\n", encoding="utf-8")
+        _git(self.repo_dir, "add", ".")
+        _git(self.repo_dir, "commit", "-q", "-m", "fix")
+        _git(self.repo_dir, "checkout", "-q", "main")
+
+        self.captured_prompt = None
+
+    def _fake_run(self, cmd, **kwargs):
+        if cmd[0] == "git":
+            return subprocess.run(cmd, text=True, capture_output=True, encoding="utf-8", errors="replace")
+        if cmd[0] == "claude":
+            self.captured_prompt = cmd[2]
+            return SimpleNamespace(returncode=0, stdout="VERDICT: REJECT\nREASON: test\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def test_prompt_omits_fabricated_coverage_delta(self):
+        old_cwd = os.getcwd()
+        os.chdir(self.repo_dir)
+        try:
+            with mock.patch.object(lib, "run", side_effect=self._fake_run), \
+                 mock.patch.object(lib, "load_config", return_value={"MAX_RETRIES": "3"}), \
+                 mock.patch.object(lib, "log_event"), \
+                 mock.patch.object(gate, "check_gate", return_value=(True, "")), \
+                 mock.patch.object(sys, "argv", ["verify.py", "42", "auto/issue-42"]):
+                verify.main()
+        finally:
+            os.chdir(old_cwd)
+
+        self.assertIsNotNone(self.captured_prompt)
+        self.assertNotIn("{{COVERAGE_DELTA}}", self.captured_prompt)
+        self.assertNotIn("Coverage delta:", self.captured_prompt)
+        self.assertNotIn("see coverage tool output in TEST_OUTPUT above", self.captured_prompt)
+
+
 if __name__ == "__main__":
     unittest.main()
