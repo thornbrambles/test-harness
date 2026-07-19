@@ -18,6 +18,18 @@ def run_stage(name: str, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(SCRIPTS_DIR / name), *args], text=True)
 
 
+def extract_branch(build_result: subprocess.CompletedProcess) -> str | None:
+    """Parses build.py's captured stdout for the branch name it prints as
+    its final line -- only trustworthy when the subprocess succeeded and
+    actually printed something."""
+    lines = build_result.stdout.strip().splitlines()
+    return lines[-1] if build_result.returncode == 0 and lines else None
+
+
+def should_run_tuner(cycle: int, tuner_every: int) -> bool:
+    return bool(tuner_every) and cycle % tuner_every == 0
+
+
 def main() -> int:
     config = lib.load_config(Path(__file__).parent.parent / "config.env")
     cycle = 0
@@ -53,15 +65,14 @@ def main() -> int:
             # command substitution to grab build.sh's final printed line.
             build_result = lib.run([sys.executable, str(SCRIPTS_DIR / "build.py"), issue])
             print(build_result.stdout + build_result.stderr)
-            lines = build_result.stdout.strip().splitlines()
-            branch = lines[-1] if build_result.returncode == 0 and lines else None
+            branch = extract_branch(build_result)
             if branch:
                 run_stage("verify.py", issue, branch)
         else:
             print("no ready issues")
 
         tuner_every = lib.cfg_int(config, "TUNER_EVERY_N_CYCLES")
-        if tuner_every and cycle % tuner_every == 0:
+        if should_run_tuner(cycle, tuner_every):
             print(f"=== cycle {cycle}: tune ===")
             run_stage("tune.py")
 
