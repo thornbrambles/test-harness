@@ -338,6 +338,10 @@ class _MainPipelineTestBase(unittest.TestCase):
         os.chdir(self.repo_dir)
         self.addCleanup(lambda: os.chdir(self.old_cwd))
 
+    # Overridden by subclasses that want to simulate a failing `gh` call.
+    pr_create_returncode = 0
+    pr_merge_returncode = 0
+
     def _fake_run(self, cmd, **kwargs):
         if cmd[0] == "git":
             return subprocess.run(cmd, text=True, capture_output=True, encoding="utf-8")
@@ -349,6 +353,18 @@ class _MainPipelineTestBase(unittest.TestCase):
                 return SimpleNamespace(returncode=0, stdout=self.existing_pr_num, stderr="")
             if cmd[:3] == ["gh", "issue", "view"]:
                 return SimpleNamespace(returncode=0, stdout=self.retry_label, stderr="")
+            if cmd[:3] == ["gh", "pr", "create"]:
+                return SimpleNamespace(
+                    returncode=self.pr_create_returncode,
+                    stdout="",
+                    stderr="" if self.pr_create_returncode == 0 else "create failed",
+                )
+            if cmd[:3] == ["gh", "pr", "merge"]:
+                return SimpleNamespace(
+                    returncode=self.pr_merge_returncode,
+                    stdout="",
+                    stderr="" if self.pr_merge_returncode == 0 else "merge failed",
+                )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -405,6 +421,41 @@ class MainApproveExistingPrTest(_MainPipelineTestBase):
         self.assertIsNotNone(
             self._gh_call("gh", "pr", "merge", self.branch, "--squash", "--delete-branch")
         )
+
+
+class MainApproveMergeFailureTest(_MainPipelineTestBase):
+    """Issue #13: if `gh pr merge` fails, main() must not report APPROVED or
+    close the issue -- it must surface the failure and return non-zero."""
+
+    verdict_text = "VERDICT: APPROVE\nLooks good.\n"
+    existing_pr_num = ""
+    retry_label = ""
+    pr_merge_returncode = 1
+
+    def test_merge_failure_does_not_close_issue_or_report_success(self):
+        rc = self._run_main()
+
+        self.assertEqual(rc, 1)
+        self.assertIsNotNone(self._gh_call("gh", "pr", "merge", self.branch, "--squash", "--delete-branch"))
+        self.assertIsNone(self._gh_call("gh", "issue", "close", self.issue))
+
+
+class MainApproveCreateFailureTest(_MainPipelineTestBase):
+    """Issue #13: if `gh pr create` fails, main() must not proceed to merge
+    or close the issue -- it must surface the failure and return non-zero."""
+
+    verdict_text = "VERDICT: APPROVE\nLooks good.\n"
+    existing_pr_num = ""
+    retry_label = ""
+    pr_create_returncode = 1
+
+    def test_create_failure_does_not_merge_close_or_report_success(self):
+        rc = self._run_main()
+
+        self.assertEqual(rc, 1)
+        self.assertIsNotNone(self._gh_call("gh", "pr", "create"))
+        self.assertIsNone(self._gh_call("gh", "pr", "merge", self.branch, "--squash", "--delete-branch"))
+        self.assertIsNone(self._gh_call("gh", "issue", "close", self.issue))
 
 
 class MainRejectRetryTest(_MainPipelineTestBase):
