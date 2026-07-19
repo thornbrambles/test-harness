@@ -102,6 +102,10 @@ def pre_fix_test_output(base: str, branch: str, test_files: list[str]) -> str:
 
 
 def main() -> int:
+    if lib.is_halted():
+        print(f"Halted: {lib.HALT_FILE.read_text(encoding='utf-8')}")
+        return 0
+
     issue, branch = sys.argv[1], sys.argv[2]
     base = "main"
     config = lib.load_config(Path(__file__).parent.parent / "config.env")

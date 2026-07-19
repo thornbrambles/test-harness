@@ -50,6 +50,10 @@ def get_prior_feedback(issue) -> str:
 
 
 def main() -> int:
+    if lib.is_halted():
+        print(f"Halted: {lib.HALT_FILE.read_text(encoding='utf-8')}")
+        return 0
+
     issue = sys.argv[1]
     config = lib.load_config(Path(__file__).parent.parent / "config.env")
 

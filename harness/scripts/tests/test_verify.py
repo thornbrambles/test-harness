@@ -257,6 +257,26 @@ class ChangedTestFilesFalsePositiveTest(unittest.TestCase):
         self.assertIn("test_real.py", result)
 
 
+class VerifyHaltedTest(unittest.TestCase):
+    """Issue #48: verify.py is the highest-blast-radius stage (merges PRs,
+    closes issues) yet had no lib.is_halted() guard, unlike scan/triage/tune
+    which correctly no-op. Assert it now skips all git/gh/claude activity --
+    including creating the temp worktree -- when halt.lock is present."""
+
+    def test_halted_skips_all_work(self):
+        fake_halt_file = mock.Mock()
+        fake_halt_file.read_text.return_value = "halted for testing"
+
+        with mock.patch.object(lib, "run") as mock_run, \
+             mock.patch.object(lib, "is_halted", return_value=True), \
+             mock.patch.object(lib, "HALT_FILE", fake_halt_file), \
+             mock.patch.object(sys, "argv", ["verify.py", "1", "auto/issue-1"]):
+            rc = verify.main()
+
+        self.assertEqual(rc, 0)
+        mock_run.assert_not_called()
+
+
 class WorktreeAddFailureTest(unittest.TestCase):
     """Reproduces the exact scenario from issue #6: the target branch is
     already checked out in the primary working tree (as build.py used to
