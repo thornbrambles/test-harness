@@ -224,5 +224,34 @@ class CounterStateTest(unittest.TestCase):
         self.assertEqual(leftovers, [])
 
 
+class LastRunStateTest(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
+        self.state_file = self.tmpdir / "state.json"
+        self.state_file.write_text('{"daily_cycles": 0, "daily_claude_calls": 0, "date": ""}', encoding="utf-8")
+        self._patcher = mock.patch.object(lib, "STATE_FILE", self.state_file)
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def test_get_last_run_defaults_to_zero_for_unset_stage(self):
+        self.assertEqual(lib.get_last_run("scan"), 0.0)
+
+    def test_set_last_run_round_trips_current_timestamp(self):
+        import time as time_module
+
+        before = time_module.time()
+        lib.set_last_run("scan")
+        after = time_module.time()
+
+        result = lib.get_last_run("scan")
+        self.assertGreaterEqual(result, before)
+        self.assertLessEqual(result, after)
+
+    def test_set_last_run_only_affects_named_stage(self):
+        lib.set_last_run("scan")
+        self.assertEqual(lib.get_last_run("tune"), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()
