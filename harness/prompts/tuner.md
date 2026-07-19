@@ -10,7 +10,7 @@ and any issues that were reopened by a human after auto-close.
 Task:
 1. Identify recurring patterns: e.g. Verifier rejecting Builder for the
    same category of mistake repeatedly, Scanner filing near-duplicate
-   issues, gate.sh rejecting for a forbidden-path pattern that's too broad
+   issues, gate.py rejecting for a forbidden-path pattern that's too broad
    or too narrow.
 2. Propose specific, minimal edits to `prompts/builder.md`,
    `prompts/verifier.md`, `prompts/scanner.md`, or `config.env` thresholds
