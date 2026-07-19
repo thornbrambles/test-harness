@@ -166,11 +166,21 @@ def main() -> int:
             ["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number", "-q", ".[0].number"]
         ).stdout.strip()
         if not pr_num or pr_num == "null":
-            lib.run(["gh", "pr", "create", "--head", branch, "--base", "main",
+            create_result = lib.run(["gh", "pr", "create", "--head", branch, "--base", "main",
                       "--title", f"Fixes #{issue}", "--body", f"Auto-verified. Closes #{issue}."])
+            if create_result.returncode != 0:
+                detail = (create_result.stderr or create_result.stdout or "").strip()
+                lib.log_event("verify_error", issue, {"reason": "gh pr create failed", "detail": detail})
+                print(f"ERROR: gh pr create failed: {detail}")
+                return 1
         else:
             lib.run(["gh", "pr", "comment", pr_num, "--body", "Auto-verified by the Verifier agent."])
-        lib.run(["gh", "pr", "merge", branch, "--squash", "--delete-branch"])
+        merge_result = lib.run(["gh", "pr", "merge", branch, "--squash", "--delete-branch"])
+        if merge_result.returncode != 0:
+            detail = (merge_result.stderr or merge_result.stdout or "").strip()
+            lib.log_event("verify_error", issue, {"reason": "gh pr merge failed", "detail": detail})
+            print(f"ERROR: gh pr merge failed: {detail}")
+            return 1
         lib.run(["gh", "issue", "close", str(issue), "--comment", "Auto-verified and merged."])
         lib.log_event("verify_approve", issue, {})
         print("APPROVED")
