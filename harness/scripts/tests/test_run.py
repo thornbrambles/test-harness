@@ -1,20 +1,31 @@
 #!/usr/bin/env python3
-"""Tests for run.py's branch-extraction and Tuner-cadence logic (issue #40).
+"""Tests for run.py's branch-extraction and per-stage cadence logic
+(issue #40, extended when run.py moved off a shared cycle counter to
+independent per-stage intervals).
 
-Both were previously inlined in the daemon's `while True` loop with no
-direct test, only indirect coverage from other scripts' tests. Pulled out
-into extract_branch()/should_run_tuner() here so they can be exercised
-without running the daemon loop itself.
+extract_branch() was previously inlined in the daemon's `while True` loop
+with no direct test, only indirect coverage from other scripts' tests.
+Pulled out so it can be exercised without running the daemon loop itself.
+
+due() replaces the old should_run_tuner()/in-process cycle counter: each
+stage's last-run time is persisted in .harness/state.json (lib.get_last_run/
+set_last_run) rather than kept in a local variable, so cadence survives a
+daemon restart (see issue #37).
 """
 from __future__ import annotations
 
+import shutil
 import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import lib  # noqa: E402
 import run  # noqa: E402
 
 
@@ -48,20 +59,44 @@ class ExtractBranchTest(unittest.TestCase):
         self.assertIsNone(run.extract_branch(result))
 
 
-class ShouldRunTunerTest(unittest.TestCase):
-    def test_runs_on_multiples_of_cadence(self):
-        self.assertTrue(run.should_run_tuner(cycle=20, tuner_every=20))
-        self.assertTrue(run.should_run_tuner(cycle=40, tuner_every=20))
+class DueTest(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
+        self.state_file = self.tmpdir / "state.json"
+        self.state_file.write_text('{"daily_cycles": 0, "daily_claude_calls": 0, "date": ""}', encoding="utf-8")
+        self._patcher = mock.patch.object(lib, "STATE_FILE", self.state_file)
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
 
-    def test_skips_non_multiples(self):
-        self.assertFalse(run.should_run_tuner(cycle=19, tuner_every=20))
-        self.assertFalse(run.should_run_tuner(cycle=21, tuner_every=20))
+    def test_never_run_is_immediately_due(self):
+        self.assertTrue(run.due("scan", 600))
 
-    def test_zero_cadence_disables_tuner(self):
-        # tuner_every=0 would otherwise raise ZeroDivisionError on `%`;
-        # falsy-cadence short-circuits instead of ever running the tuner.
-        self.assertFalse(run.should_run_tuner(cycle=0, tuner_every=0))
-        self.assertFalse(run.should_run_tuner(cycle=20, tuner_every=0))
+    def test_not_due_right_after_running(self):
+        lib.set_last_run("scan")
+
+        self.assertFalse(run.due("scan", 600))
+
+    def test_due_once_interval_elapses(self):
+        state = lib._read_state()
+        state["last_scan_ts"] = time.time() - 601
+        lib._write_state(state)
+
+        self.assertTrue(run.due("scan", 600))
+
+    def test_zero_or_negative_interval_never_due(self):
+        # A stage with interval_seconds <= 0 is disabled outright, matching
+        # the old should_run_tuner()'s tuner_every=0 short-circuit -- never
+        # true, regardless of how long it's been since the last run.
+        self.assertFalse(run.due("tune", 0))
+        lib.set_last_run("tune")
+        self.assertFalse(run.due("tune", 0))
+
+    def test_stages_are_independent(self):
+        lib.set_last_run("scan")
+
+        self.assertFalse(run.due("scan", 600))
+        self.assertTrue(run.due("triage", 600))
 
 
 if __name__ == "__main__":

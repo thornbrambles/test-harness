@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Daemon loop tying scan/build/verify/tune/overseer together. Usage: run.py"""
+"""Daemon loop tying scan/triage/build/verify/tune together. Each stage
+runs on its own configurable interval (SCAN_INTERVAL_SECONDS,
+TRIAGE_INTERVAL_SECONDS, BUILD_INTERVAL_SECONDS, TUNER_INTERVAL_SECONDS)
+rather than all being gated behind one shared per-iteration cadence -- the
+loop wakes on a short LOOP_TICK_SECONDS heartbeat and checks which stages
+are actually due. Usage: run.py"""
 from __future__ import annotations
 
 import subprocess
@@ -26,13 +31,19 @@ def extract_branch(build_result: subprocess.CompletedProcess) -> str | None:
     return lines[-1] if build_result.returncode == 0 and lines else None
 
 
-def should_run_tuner(cycle: int, tuner_every: int) -> bool:
-    return bool(tuner_every) and cycle % tuner_every == 0
+def due(stage: str, interval_seconds: int) -> bool:
+    """A stage is due once its own interval has elapsed since its own last
+    run. Last-run times are persisted in .harness/state.json (via
+    lib.get_last_run/set_last_run), not an in-process counter -- so cadence
+    survives a daemon restart (see issue #37: the old Tuner cycle counter
+    didn't)."""
+    if interval_seconds <= 0:
+        return False
+    return (time.time() - lib.get_last_run(stage)) >= interval_seconds
 
 
 def main() -> int:
     config = lib.load_config(Path(__file__).parent.parent / "config.env")
-    cycle = 0
 
     while True:
         if lib.is_halted():
@@ -46,37 +57,42 @@ def main() -> int:
 
         lib.reset_daily_counters_if_new_day()
         lib.bump_counter("daily_cycles")
-        cycle += 1
 
-        print(f"=== cycle {cycle}: scan ===")
-        run_stage("scan.py")
+        if due("scan", lib.cfg_int(config, "SCAN_INTERVAL_SECONDS")):
+            print("=== scan ===")
+            run_stage("scan.py")
+            lib.set_last_run("scan")
 
-        print(f"=== cycle {cycle}: triage ===")
-        run_stage("triage.py")
+        if due("triage", lib.cfg_int(config, "TRIAGE_INTERVAL_SECONDS")):
+            print("=== triage ===")
+            run_stage("triage.py")
+            lib.set_last_run("triage")
 
-        print(f"=== cycle {cycle}: work ===")
-        issue_result = lib.run([
-            "gh", "issue", "list", "--state", "open", "--label", "state:ready",
-            "--limit", "1", "--json", "number", "-q", ".[0].number",
-        ])
-        issue = issue_result.stdout.strip()
-        if issue and issue != "null":
-            # Captured (not streamed) like the old run.sh, which relied on
-            # command substitution to grab build.sh's final printed line.
-            build_result = lib.run([sys.executable, str(SCRIPTS_DIR / "build.py"), issue])
-            print(build_result.stdout + build_result.stderr)
-            branch = extract_branch(build_result)
-            if branch:
-                run_stage("verify.py", issue, branch)
-        else:
-            print("no ready issues")
+        if due("build", lib.cfg_int(config, "BUILD_INTERVAL_SECONDS")):
+            issue_result = lib.run([
+                "gh", "issue", "list", "--state", "open", "--label", "state:ready",
+                "--limit", "1", "--json", "number", "-q", ".[0].number",
+            ])
+            issue = issue_result.stdout.strip()
+            if issue and issue != "null":
+                print(f"=== work: issue #{issue} ===")
+                # Captured (not streamed) like the old run.sh, which relied on
+                # command substitution to grab build.sh's final printed line.
+                build_result = lib.run([sys.executable, str(SCRIPTS_DIR / "build.py"), issue])
+                print(build_result.stdout + build_result.stderr)
+                branch = extract_branch(build_result)
+                if branch:
+                    run_stage("verify.py", issue, branch)
+            else:
+                print("no ready issues")
+            lib.set_last_run("build")
 
-        tuner_every = lib.cfg_int(config, "TUNER_EVERY_N_CYCLES")
-        if should_run_tuner(cycle, tuner_every):
-            print(f"=== cycle {cycle}: tune ===")
+        if due("tune", lib.cfg_int(config, "TUNER_INTERVAL_SECONDS")):
+            print("=== tune ===")
             run_stage("tune.py")
+            lib.set_last_run("tune")
 
-        time.sleep(lib.cfg_int(config, "SCAN_INTERVAL_SECONDS"))
+        time.sleep(lib.cfg_int(config, "LOOP_TICK_SECONDS"))
 
 
 if __name__ == "__main__":

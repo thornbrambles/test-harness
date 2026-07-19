@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -111,6 +112,18 @@ def bump_counter(key: str) -> None:
 
 def get_counter(key: str) -> int:
     return _read_state().get(key, 0)
+
+
+# --- per-stage cadence (independent intervals, survives restarts) ---
+
+def get_last_run(stage: str) -> float:
+    return _read_state().get(f"last_{stage}_ts", 0.0)
+
+
+def set_last_run(stage: str) -> None:
+    state = _read_state()
+    state[f"last_{stage}_ts"] = time.time()
+    _write_state(state)
 
 
 # --- GitHub issue state machine ---
