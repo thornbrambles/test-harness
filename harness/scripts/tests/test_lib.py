@@ -1,6 +1,20 @@
 #!/usr/bin/env python3
-"""Tests for lib.py: is_test_file (issue #7), retry-count/state-label
-bookkeeping, and daily counter helpers (issue #9).
+"""Tests for lib.py: run() and load_config() (issue #73), is_test_file
+(issue #7), retry-count/state-label bookkeeping, and daily counter helpers
+(issue #9).
+
+lib.run() is the sole subprocess entrypoint every script routes through and
+contains Windows-specific branching: it resolves cmd[0] via shutil.which(),
+then rewraps the command through cmd.exe /c if the resolved path is a
+.cmd/.bat shim (CreateProcess can't launch those directly). These tests
+mock shutil.which and subprocess.run to assert the rewrap happens only for
+.cmd/.bat, that a plain resolved path passes through unwrapped, and that an
+unresolvable cmd[0] leaves the original argv untouched instead of crashing.
+
+lib.load_config() hand-parses the KEY=VALUE config.env format (comment
+stripping, blank-line skipping, quote stripping) with no prior test
+coverage; these tests exercise comments, blank lines, quoted/unquoted
+values, and values containing "=" against a real temp file.
 
 lib.is_test_file() replaces the old unanchored re.compile(r"test|spec",
 re.IGNORECASE).search() that both gate.py and verify.py used to detect
@@ -29,6 +43,98 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import lib  # noqa: E402
+
+
+class RunTest(unittest.TestCase):
+    """lib.run() resolves cmd[0] via shutil.which() and, if the resolved
+    path is a .cmd/.bat shim, rewraps the whole command through cmd.exe /c
+    -- CreateProcess can't launch those directly. Mocks shutil.which and
+    subprocess.run so no real process is spawned."""
+
+    def test_resolved_cmd_shim_is_rewrapped_with_cmd_exe(self):
+        with mock.patch.object(lib.shutil, "which", return_value=r"C:\npm.cmd"), \
+             mock.patch.object(lib.subprocess, "run") as mock_run:
+            lib.run(["npm", "install"])
+
+        actual_cmd = mock_run.call_args.args[0]
+        self.assertEqual(actual_cmd, ["cmd.exe", "/c", r"C:\npm.cmd", "install"])
+
+    def test_resolved_bat_shim_is_rewrapped_with_cmd_exe(self):
+        with mock.patch.object(lib.shutil, "which", return_value=r"C:\tool.bat"), \
+             mock.patch.object(lib.subprocess, "run") as mock_run:
+            lib.run(["tool", "--flag"])
+
+        actual_cmd = mock_run.call_args.args[0]
+        self.assertEqual(actual_cmd, ["cmd.exe", "/c", r"C:\tool.bat", "--flag"])
+
+    def test_resolved_plain_exe_is_passed_through_unwrapped(self):
+        with mock.patch.object(lib.shutil, "which", return_value=r"C:\git.exe"), \
+             mock.patch.object(lib.subprocess, "run") as mock_run:
+            lib.run(["git", "status"])
+
+        actual_cmd = mock_run.call_args.args[0]
+        self.assertEqual(actual_cmd, [r"C:\git.exe", "status"])
+
+    def test_unresolvable_cmd_leaves_original_argv_untouched(self):
+        with mock.patch.object(lib.shutil, "which", return_value=None), \
+             mock.patch.object(lib.subprocess, "run") as mock_run:
+            lib.run(["ghost-binary", "arg"])
+
+        actual_cmd = mock_run.call_args.args[0]
+        self.assertEqual(actual_cmd, ["ghost-binary", "arg"])
+
+    def test_defaults_are_set_for_text_capture_and_utf8(self):
+        with mock.patch.object(lib.shutil, "which", return_value=None), \
+             mock.patch.object(lib.subprocess, "run") as mock_run:
+            lib.run(["ghost-binary"])
+
+        kwargs = mock_run.call_args.kwargs
+        self.assertTrue(kwargs["text"])
+        self.assertTrue(kwargs["capture_output"])
+        self.assertEqual(kwargs["encoding"], "utf-8")
+        self.assertEqual(kwargs["errors"], "replace")
+
+
+class LoadConfigTest(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
+
+    def _write_and_load(self, contents: str) -> dict:
+        path = self.tmpdir / "config.env"
+        path.write_text(contents, encoding="utf-8")
+        return lib.load_config(path)
+
+    def test_parses_unquoted_and_quoted_values(self):
+        config = self._write_and_load(
+            'PLAIN=value\n'
+            'DOUBLE_QUOTED="quoted value"\n'
+            "SINGLE_QUOTED='also quoted'\n"
+        )
+        self.assertEqual(config["PLAIN"], "value")
+        self.assertEqual(config["DOUBLE_QUOTED"], "quoted value")
+        self.assertEqual(config["SINGLE_QUOTED"], "also quoted")
+
+    def test_skips_blank_lines_and_full_line_comments(self):
+        config = self._write_and_load(
+            "\n"
+            "# a full-line comment\n"
+            "KEY=value\n"
+            "   \n"
+        )
+        self.assertEqual(config, {"KEY": "value"})
+
+    def test_strips_trailing_comment_after_value(self):
+        config = self._write_and_load("KEY=value  # trailing comment\n")
+        self.assertEqual(config["KEY"], "value")
+
+    def test_value_containing_equals_sign_is_preserved(self):
+        config = self._write_and_load("URL=https://example.com/?a=1&b=2\n")
+        self.assertEqual(config["URL"], "https://example.com/?a=1&b=2")
+
+    def test_keys_and_values_are_trimmed_of_surrounding_whitespace(self):
+        config = self._write_and_load("  KEY  =  value  \n")
+        self.assertEqual(config, {"KEY": "value"})
 
 
 class IsTestFileFalsePositivesTest(unittest.TestCase):
