@@ -52,7 +52,9 @@ issue (see below) — `risk:low` issues are auto-promoted to `state:ready`;
 - `scripts/overseer.py` — reads `.harness/log.jsonl`, enforces global
   thresholds (including the human-reopen check), can write
   `.harness/halt.lock` to pause everything.
-- `scripts/run.py` — the daemon loop tying it all together.
+- `scripts/run.py` — the daemon loop tying it all together. Re-reads
+  `config.env` at the start of every loop iteration, so an edit (e.g. a
+  merged Tuner PR) takes effect on the next tick without a daemon restart.
 - `.harness/log.jsonl` — append-only event log every script writes to.
 - `.harness/state.json` — running counters (daily cost, backlog size, etc).
 

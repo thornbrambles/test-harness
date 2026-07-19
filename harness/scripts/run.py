@@ -43,9 +43,11 @@ def due(stage: str, interval_seconds: int) -> bool:
 
 
 def main() -> int:
-    config = lib.load_config(Path(__file__).parent.parent / "config.env")
+    config_path = Path(__file__).parent.parent / "config.env"
 
     while True:
+        config = lib.load_config(config_path)
+
         if lib.is_halted():
             print(f"Daemon halted: {lib.HALT_FILE.read_text(encoding='utf-8')}")
             print(f"Fix the issue, then: rm {lib.HALT_FILE}")
