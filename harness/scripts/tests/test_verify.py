@@ -220,6 +220,106 @@ class PreFixTestOutputPythonDispatchTest(unittest.TestCase):
         self.assertNotIn("Could not find a config file", output)
 
 
+class PreFixTestOutputPytestStyleFunctionTest(unittest.TestCase):
+    """A pytest-style test file (plain top-level `def test_x():`, no
+    unittest.TestCase subclass) must actually execute its test function
+    during the pre-fix run instead of silently reporting "Ran 0 tests ...
+    OK" (issue #69) -- `python -m unittest module` only discovers TestCase
+    subclasses, so a function-only file collects zero tests and looks like
+    a pass even when the underlying assertion would have failed.
+    """
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
+
+        _git(self.tmpdir, "init", "-q")
+        _git(self.tmpdir, "config", "user.email", "test@example.com")
+        _git(self.tmpdir, "config", "user.name", "Test")
+
+        (self.tmpdir / "src.txt").write_text("OLD_SOURCE\n", encoding="utf-8")
+        (self.tmpdir / "mytest.py").write_text(
+            "def test_source():\n"
+            "    assert open('src.txt', encoding='utf-8').read().strip() == 'OLD_SOURCE'\n",
+            encoding="utf-8",
+        )
+        _git(self.tmpdir, "add", ".")
+        _git(self.tmpdir, "commit", "-q", "-m", "base")
+        _git(self.tmpdir, "branch", "base")
+
+        _git(self.tmpdir, "checkout", "-q", "-b", "fix")
+        (self.tmpdir / "src.txt").write_text("NEW_SOURCE\n", encoding="utf-8")
+        (self.tmpdir / "mytest.py").write_text(
+            "def test_source():\n"
+            "    assert open('src.txt', encoding='utf-8').read().strip() == 'NEW_SOURCE'\n",
+            encoding="utf-8",
+        )
+        _git(self.tmpdir, "add", ".")
+        _git(self.tmpdir, "commit", "-q", "-m", "fix")
+
+    def _run_in_repo(self, fn):
+        old_cwd = os.getcwd()
+        os.chdir(self.tmpdir)
+        try:
+            return fn()
+        finally:
+            os.chdir(old_cwd)
+
+    def test_function_style_test_actually_runs_and_fails_pre_fix(self):
+        output = self._run_in_repo(
+            lambda: verify.pre_fix_test_output("base", "fix", ["mytest.py"])
+        )
+        # Against the old unittest-only dispatch, this would just print
+        # "Ran 0 tests ... OK" -- indistinguishable from a pass. The
+        # function-fallback must actually call test_source() and surface
+        # its AssertionError.
+        self.assertIn("FAIL", output)
+        self.assertIn("AssertionError", output)
+
+    def test_run_python_test_file_reports_fallback_ran(self):
+        old_cwd = os.getcwd()
+        os.chdir(self.tmpdir)
+        try:
+            output = verify.run_python_test_file("mytest.py")
+        finally:
+            os.chdir(old_cwd)
+        self.assertIn("Ran 0 tests", output)
+        self.assertIn("Ran 1 tests", output)
+
+
+class PreFixTestOutputUnittestTestCaseNoFallbackTest(unittest.TestCase):
+    """A real unittest.TestCase file must be picked up directly by
+    `python -m unittest`; the function-fallback should not trigger."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
+
+        _git(self.tmpdir, "init", "-q")
+        _git(self.tmpdir, "config", "user.email", "test@example.com")
+        _git(self.tmpdir, "config", "user.name", "Test")
+
+        (self.tmpdir / "mytest.py").write_text(
+            "import unittest\n\n"
+            "class MyTest(unittest.TestCase):\n"
+            "    def test_ok(self):\n"
+            "        self.assertTrue(True)\n",
+            encoding="utf-8",
+        )
+        _git(self.tmpdir, "add", ".")
+        _git(self.tmpdir, "commit", "-q", "-m", "base")
+
+    def test_no_function_fallback_when_testcase_collected(self):
+        old_cwd = os.getcwd()
+        os.chdir(self.tmpdir)
+        try:
+            output = verify.run_python_test_file("mytest.py")
+        finally:
+            os.chdir(old_cwd)
+        self.assertIn("Ran 1 test", output)
+        self.assertNotIn("Ran 0 tests", output)
+
+
 class ChangedTestFilesFalsePositiveTest(unittest.TestCase):
     """changed_test_files must not treat a file that merely contains "test"
     or "spec" as a substring (e.g. latest_prices.py) as a test file (issue

@@ -56,6 +56,49 @@ def changed_test_files(base: str, branch: str) -> list[str]:
     return [f for f in names if f and lib.is_test_file(f)]
 
 
+# Fallback for pytest-style test files: `python -m unittest module` only
+# discovers unittest.TestCase subclasses. A file with plain top-level
+# `def test_x():` functions and no TestCase collects zero tests and still
+# exits 0 with "Ran 0 tests ... OK" -- indistinguishable from a real pass
+# (issue #69). When that happens, call any top-level test_* functions
+# directly so such files still produce a real pass/fail signal.
+_FUNCTION_TEST_RUNNER = '''
+import importlib
+import sys
+import traceback
+
+mod = importlib.import_module(sys.argv[1])
+funcs = [(name, obj) for name, obj in vars(mod).items()
+         if name.startswith("test_") and callable(obj)]
+if not funcs:
+    print("Ran 0 tests (no unittest.TestCase or pytest-style test_* functions found)")
+    sys.exit(0)
+
+failures = 0
+for name, fn in funcs:
+    try:
+        fn()
+        print(name + " ... ok")
+    except Exception:
+        failures += 1
+        print(name + " ... FAIL")
+        traceback.print_exc()
+
+print("Ran " + str(len(funcs)) + " tests")
+sys.exit(1 if failures else 0)
+'''
+
+
+def run_python_test_file(f: str) -> str:
+    module = f[:-len(".py")].replace("\\", "/").replace("/", ".")
+    result = lib.run(["python", "-m", "unittest", module])
+    output = result.stdout + result.stderr
+    if re.search(r"Ran 0 tests", output):
+        fallback = lib.run(["python", "-c", _FUNCTION_TEST_RUNNER, module])
+        output += "\n" + fallback.stdout + fallback.stderr
+    return output
+
+
 def pre_fix_test_output(base: str, branch: str, test_files: list[str]) -> str:
     """Revert source to the pre-fix commit while keeping the new/changed test
     files at their post-fix content, then run just those test files. (The
@@ -91,11 +134,13 @@ def pre_fix_test_output(base: str, branch: str, test_files: list[str]) -> str:
             continue
         if f.endswith(".sh"):
             result = lib.run(["bash", f])
+            output = result.stdout + result.stderr
         elif f.endswith(".py"):
-            result = lib.run(["python", f])
+            output = run_python_test_file(f)
         else:
             result = lib.run(["npx", "jest", f])
-        chunks.append(f"--- {f} ---\n{result.stdout + result.stderr}")
+            output = result.stdout + result.stderr
+        chunks.append(f"--- {f} ---\n{output}")
 
     lib.run(["git", "checkout", branch, "--", "."])
     return "\n".join(chunks)
