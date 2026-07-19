@@ -14,8 +14,17 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+# stdout/stderr default to the Windows console codepage (cp1252), which
+# can't encode most of what an LLM prints (arrows, em dashes, checkmarks).
+# Every script imports this module before printing anything, so fixing it
+# here covers all of them.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 # Resolved to an absolute path *now*, at import time -- before any later
