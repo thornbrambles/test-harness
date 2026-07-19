@@ -168,7 +168,11 @@ class WorktreeAddFailureTest(unittest.TestCase):
     already checked out in the primary working tree (as build.py used to
     leave it), so `git worktree add` fails. verify.main() must detect that
     failure and bail out instead of silently chdir'ing into an empty temp
-    directory and letting gate.check_gate run against a non-repo."""
+    directory and letting gate.check_gate run against a non-repo.
+
+    lib.load_config is mocked because the real config.env is gitignored and
+    so wouldn't exist in a fresh checkout -- exactly the environment this
+    test (and verify.py's own test run) executes in."""
 
     def setUp(self):
         self.repo_dir = Path(tempfile.mkdtemp())
@@ -193,6 +197,7 @@ class WorktreeAddFailureTest(unittest.TestCase):
 
     def test_aborts_without_running_gate_when_worktree_add_fails(self):
         with mock.patch.object(lib, "run", side_effect=self._fake_run), \
+             mock.patch.object(lib, "load_config", return_value={}), \
              mock.patch.object(lib, "log_event"), \
              mock.patch.object(gate, "check_gate") as mock_check_gate, \
              mock.patch.object(sys, "argv", ["verify.py", "1", "auto/issue-1"]):

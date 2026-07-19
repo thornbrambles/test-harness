@@ -8,6 +8,12 @@ including the primary working tree. This silently broke every
 build -> verify cycle. These tests assert build.main() returns HEAD to
 main, and that a subsequent `git worktree add` for the issue branch (the
 real thing verify.py does) succeeds afterward.
+
+lib.load_config is mocked rather than left to read the real config.env: that
+file is gitignored, so it's absent from any fresh clone or `git worktree
+add` checkout (exactly the environment verify.py's own test run happens in)
+-- reading it for real would make these tests fail with FileNotFoundError
+regardless of the fix under test.
 """
 from __future__ import annotations
 
@@ -63,6 +69,7 @@ class BuildLeavesMainCheckedOutTest(unittest.TestCase):
 
     def test_leaves_head_on_main_after_finishing(self):
         with mock.patch.object(lib, "run", side_effect=self._fake_run), \
+             mock.patch.object(lib, "load_config", return_value={"FORBIDDEN_PATH_REGEX": "migrations/"}), \
              mock.patch.object(lib, "bump_counter"), \
              mock.patch.object(lib, "log_event"), \
              mock.patch.object(sys, "argv", ["build.py", "1"]):
@@ -75,6 +82,7 @@ class BuildLeavesMainCheckedOutTest(unittest.TestCase):
         # This is the actual failure mode from issue #6: verify.py runs
         # `git worktree add <workdir> <branch>` right after build.py exits.
         with mock.patch.object(lib, "run", side_effect=self._fake_run), \
+             mock.patch.object(lib, "load_config", return_value={"FORBIDDEN_PATH_REGEX": "migrations/"}), \
              mock.patch.object(lib, "bump_counter"), \
              mock.patch.object(lib, "log_event"), \
              mock.patch.object(sys, "argv", ["build.py", "1"]):
