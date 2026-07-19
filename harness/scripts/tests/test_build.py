@@ -17,6 +17,7 @@ regardless of the fix under test.
 """
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
@@ -184,6 +185,45 @@ class BuildInfraFailureTest(unittest.TestCase):
         logged_events = [c.args[0] for c in mock_log.call_args_list]
         self.assertIn("build_complete", logged_events)
         self.assertNotIn("build_infra_failure", logged_events)
+
+
+class GetPriorFeedbackTest(unittest.TestCase):
+    """Tests for issue #44: get_prior_feedback() used to call json.loads()
+    on `gh issue view`'s output unconditionally. lib.run() never raises on
+    a non-zero exit, so a failing/timed-out gh call (rate limit, transient
+    network error, issue deleted mid-run) left result.stdout empty or
+    non-JSON, and json.loads() raised an unhandled JSONDecodeError --
+    crashing build.py instead of routing to the existing needs-human /
+    infra-failure handling in main(). These tests assert the function
+    instead falls back to "" on both a non-zero gh exit and unparseable
+    stdout, matching the pattern used elsewhere in this codebase."""
+
+    def test_returns_empty_string_when_gh_call_fails(self):
+        fake_run = mock.Mock(return_value=SimpleNamespace(returncode=1, stdout="", stderr="rate limited"))
+        with mock.patch.object(lib, "run", fake_run):
+            result = build.get_prior_feedback("1")
+        self.assertEqual(result, "")
+
+    def test_returns_empty_string_on_unparseable_stdout(self):
+        fake_run = mock.Mock(return_value=SimpleNamespace(returncode=0, stdout="not json", stderr=""))
+        with mock.patch.object(lib, "run", fake_run):
+            result = build.get_prior_feedback("1")
+        self.assertEqual(result, "")
+
+    def test_extracts_last_three_reason_comments_on_success(self):
+        comments = {
+            "comments": [
+                {"body": "unrelated comment"},
+                {"body": "REASON: one"},
+                {"body": "REASON: two"},
+                {"body": "REASON: three"},
+                {"body": "REASON: four"},
+            ]
+        }
+        fake_run = mock.Mock(return_value=SimpleNamespace(returncode=0, stdout=json.dumps(comments), stderr=""))
+        with mock.patch.object(lib, "run", fake_run):
+            result = build.get_prior_feedback("1")
+        self.assertEqual(result, "REASON: two\nREASON: three\nREASON: four")
 
 
 class RenderSinglePassSubstitutionTest(unittest.TestCase):
