@@ -84,6 +84,11 @@ def main() -> int:
 
     lib.set_state_label(issue, "in-review")
     lib.log_event("build_complete", issue, {"branch": branch, "retry": str(retry)})
+
+    # Leave HEAD on main: verify.py's `git worktree add` refuses to check out
+    # a branch that's already checked out elsewhere, including here.
+    lib.run(["git", "checkout", "main"])
+
     print(branch)
     return 0
 

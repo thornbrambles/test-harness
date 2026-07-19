@@ -91,7 +91,13 @@ def main() -> int:
     config = lib.load_config(Path(__file__).parent.parent / "config.env")
 
     workdir = tempfile.mkdtemp()
-    lib.run(["git", "worktree", "add", workdir, branch])
+    worktree_add = lib.run(["git", "worktree", "add", workdir, branch])
+    if worktree_add.returncode != 0:
+        shutil.rmtree(workdir, ignore_errors=True)
+        detail = (worktree_add.stderr or worktree_add.stdout or "").strip()
+        lib.log_event("verify_error", issue, {"reason": "git worktree add failed", "detail": detail})
+        print(f"ERROR: git worktree add failed: {detail}")
+        return 1
 
     old_cwd = os.getcwd()
     os.chdir(workdir)

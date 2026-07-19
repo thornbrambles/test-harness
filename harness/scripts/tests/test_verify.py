@@ -19,9 +19,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import gate  # noqa: E402
+import lib  # noqa: E402
 import verify  # noqa: E402
 
 
@@ -157,6 +161,45 @@ class PreFixTestOutputPythonDispatchTest(unittest.TestCase):
         self.assertIn("OLD_SOURCE", output)
         self.assertNotIn("OLD_TEST_MARKER", output)
         self.assertNotIn("Could not find a config file", output)
+
+
+class WorktreeAddFailureTest(unittest.TestCase):
+    """Reproduces the exact scenario from issue #6: the target branch is
+    already checked out in the primary working tree (as build.py used to
+    leave it), so `git worktree add` fails. verify.main() must detect that
+    failure and bail out instead of silently chdir'ing into an empty temp
+    directory and letting gate.check_gate run against a non-repo."""
+
+    def setUp(self):
+        self.repo_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.repo_dir, ignore_errors=True))
+
+        _git(self.repo_dir, "init", "-q")
+        _git(self.repo_dir, "config", "user.email", "test@example.com")
+        _git(self.repo_dir, "config", "user.name", "Test")
+        (self.repo_dir / "file.txt").write_text("base\n", encoding="utf-8")
+        _git(self.repo_dir, "add", ".")
+        _git(self.repo_dir, "commit", "-q", "-m", "base")
+        _git(self.repo_dir, "branch", "-M", "main")
+
+        # Mirror build.py's old (buggy) behavior: leave the issue branch
+        # checked out right here in the primary working tree.
+        _git(self.repo_dir, "checkout", "-q", "-b", "auto/issue-1")
+
+    def _fake_run(self, cmd, **kwargs):
+        if cmd[0] == "git":
+            return subprocess.run(cmd, cwd=self.repo_dir, text=True, capture_output=True)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def test_aborts_without_running_gate_when_worktree_add_fails(self):
+        with mock.patch.object(lib, "run", side_effect=self._fake_run), \
+             mock.patch.object(lib, "log_event"), \
+             mock.patch.object(gate, "check_gate") as mock_check_gate, \
+             mock.patch.object(sys, "argv", ["verify.py", "1", "auto/issue-1"]):
+            rc = verify.main()
+
+        self.assertEqual(rc, 1)
+        mock_check_gate.assert_not_called()
 
 
 if __name__ == "__main__":
