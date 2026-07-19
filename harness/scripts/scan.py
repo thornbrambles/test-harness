@@ -29,6 +29,17 @@ def main() -> int:
         ["claude", "-p", prompt, "--allowedTools", "Bash(gh:*),Bash(git:*),Read,Grep,Glob"]
     )
     lib.bump_counter("daily_claude_calls")
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        lib.log_event(
+            "scan_infra_failure",
+            "-",
+            {"open_auto_before": open_auto, "returncode": str(result.returncode), "detail": detail[-2000:]},
+        )
+        print(result.stdout + result.stderr)
+        return 1
+
     lib.log_event("scan_complete", "-", {"open_auto_before": open_auto})
 
     print(result.stdout + result.stderr)

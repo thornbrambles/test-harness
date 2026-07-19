@@ -92,5 +92,54 @@ class TunePrDecisionTest(unittest.TestCase):
         self.assertEqual(_current_branch(self.repo_dir), "main")
 
 
+class TuneInfraFailureTest(unittest.TestCase):
+    """Tests for issue #51: tune.py used to only branch on `git diff --quiet`
+    after the claude call, so a crashed/errored claude invocation that made
+    no edits was logged as tune_no_change -- indistinguishable from the
+    Tuner legitimately deciding nothing needed changing. These tests assert
+    a nonzero claude exit is instead logged as its own tune_infra_failure
+    event, distinct from both tune_no_change and tune_pr_opened."""
+
+    def setUp(self):
+        self.repo_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.repo_dir, ignore_errors=True))
+
+        _git(self.repo_dir, "init", "-q")
+        _git(self.repo_dir, "config", "user.email", "test@example.com")
+        _git(self.repo_dir, "config", "user.name", "Test")
+        (self.repo_dir / "prompts").mkdir()
+        (self.repo_dir / "prompts" / "tuner.md").write_text("base\n", encoding="utf-8")
+        (self.repo_dir / "config.env").write_text("A=1\n", encoding="utf-8")
+        _git(self.repo_dir, "add", ".")
+        _git(self.repo_dir, "commit", "-q", "-m", "base")
+        _git(self.repo_dir, "branch", "-M", "main")
+
+        self.prompts_dir_patch = mock.patch.object(tune, "PROMPTS_DIR", self.repo_dir / "prompts")
+        self.prompts_dir_patch.start()
+        self.addCleanup(self.prompts_dir_patch.stop)
+
+    def _fake_run(self, cmd, **kwargs):
+        if cmd[0] == "git":
+            return subprocess.run(cmd, cwd=self.repo_dir, text=True, capture_output=True)
+        if cmd[0] == "claude":
+            return SimpleNamespace(returncode=1, stdout="", stderr="rate limited")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def test_nonzero_exit_logs_infra_failure_not_no_change_or_pr(self):
+        with mock.patch.object(lib, "run", side_effect=self._fake_run), \
+             mock.patch.object(lib, "is_halted", return_value=False), \
+             mock.patch.object(lib, "bump_counter"), \
+             mock.patch.object(lib, "log_event") as mock_log, \
+             mock.patch.object(sys, "argv", ["tune.py"]):
+            rc = tune.main()
+
+        self.assertEqual(rc, 1)
+        logged_events = [c.args[0] for c in mock_log.call_args_list]
+        self.assertIn("tune_infra_failure", logged_events)
+        self.assertNotIn("tune_no_change", logged_events)
+        self.assertNotIn("tune_pr_opened", logged_events)
+        self.assertEqual(_current_branch(self.repo_dir), "main")
+
+
 if __name__ == "__main__":
     unittest.main()
