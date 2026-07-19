@@ -164,5 +164,74 @@ class OscillationTest(GateCheckTestBase):
         self.assertTrue(passed, reason)
 
 
+class LintTest(GateCheckTestBase):
+    def setUp(self):
+        super().setUp()
+        self.npm_calls = []
+        self.npm_result = subprocess.CompletedProcess(["npm", "run", "lint"], 0, "", "")
+
+    def _fake_run(self, cmd, **kwargs):
+        if cmd[0] == "git":
+            return subprocess.run(cmd, cwd=self.repo_dir, text=True, capture_output=True)
+        if cmd == ["npm", "run", "lint"]:
+            self.npm_calls.append(cmd)
+            return self.npm_result
+        return mock.DEFAULT
+
+    def _commit_package_json(self, contents: str):
+        (self.repo_dir / "package.json").write_text(contents, encoding="utf-8")
+        with (self.repo_dir / "test_thing.py").open("a", encoding="utf-8") as f:
+            f.write("lint-test\n")
+        _git(self.repo_dir, "add", ".")
+        _git(self.repo_dir, "commit", "-q", "-m", "add package.json")
+
+    def test_no_package_json_skips_lint_check(self):
+        with (self.repo_dir / "test_thing.py").open("a", encoding="utf-8") as f:
+            f.write("no-pkg\n")
+        _git(self.repo_dir, "add", ".")
+        _git(self.repo_dir, "commit", "-q", "-m", "no package.json")
+
+        passed, reason = self._check_gate()
+
+        self.assertTrue(passed, reason)
+        self.assertEqual(self.npm_calls, [])
+
+    def test_package_json_without_lint_script_passes(self):
+        self._commit_package_json('{"scripts": {"build": "tsc"}}')
+
+        passed, reason = self._check_gate()
+
+        self.assertTrue(passed, reason)
+        self.assertEqual(self.npm_calls, [])
+
+    def test_lint_failure_rejects_with_last_five_lines(self):
+        self._commit_package_json('{"scripts": {"lint": "eslint ."}}')
+        lines = [f"error line {i}" for i in range(8)]
+        self.npm_result = subprocess.CompletedProcess(["npm", "run", "lint"], 1, "\n".join(lines), "")
+
+        passed, reason = self._check_gate()
+
+        self.assertFalse(passed)
+        self.assertEqual(reason, "lint failed: " + "\n".join(lines[-5:]))
+        self.assertEqual(len(self.npm_calls), 1)
+
+    def test_lint_success_does_not_affect_gate(self):
+        self._commit_package_json('{"scripts": {"lint": "eslint ."}}')
+        self.npm_result = subprocess.CompletedProcess(["npm", "run", "lint"], 0, "", "")
+
+        passed, reason = self._check_gate()
+
+        self.assertTrue(passed, reason)
+        self.assertEqual(len(self.npm_calls), 1)
+
+    def test_malformed_package_json_treated_as_no_scripts(self):
+        self._commit_package_json("{not valid json")
+
+        passed, reason = self._check_gate()
+
+        self.assertTrue(passed, reason)
+        self.assertEqual(self.npm_calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()
