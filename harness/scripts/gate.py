@@ -50,8 +50,7 @@ def check_gate(issue, branch: str, base: str, config: dict) -> tuple[bool, str]:
         return False, f"diff too large ({lines_changed} lines > {config['MAX_DIFF_LINES']})"
 
     # 3. no test file touched
-    test_re = re.compile(r"test|spec", re.IGNORECASE)
-    if not any(test_re.search(f) for f in changed):
+    if not any(lib.is_test_file(f) for f in changed):
         return False, "no test file changed"
 
     # 4. lint, if a script exists for it

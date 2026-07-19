@@ -163,6 +163,43 @@ class PreFixTestOutputPythonDispatchTest(unittest.TestCase):
         self.assertNotIn("Could not find a config file", output)
 
 
+class ChangedTestFilesFalsePositiveTest(unittest.TestCase):
+    """changed_test_files must not treat a file that merely contains "test"
+    or "spec" as a substring (e.g. latest_prices.py) as a test file (issue
+    #7) -- otherwise pre_fix_test_output would dispatch it through the
+    pre-fix test runner as if it were real test evidence."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
+
+        _git(self.tmpdir, "init", "-q")
+        _git(self.tmpdir, "config", "user.email", "test@example.com")
+        _git(self.tmpdir, "config", "user.name", "Test")
+
+        (self.tmpdir / "latest_prices.py").write_text("OLD\n", encoding="utf-8")
+        (self.tmpdir / "test_real.py").write_text("OLD\n", encoding="utf-8")
+        _git(self.tmpdir, "add", ".")
+        _git(self.tmpdir, "commit", "-q", "-m", "base")
+        _git(self.tmpdir, "branch", "base")
+
+        _git(self.tmpdir, "checkout", "-q", "-b", "fix")
+        (self.tmpdir / "latest_prices.py").write_text("NEW\n", encoding="utf-8")
+        (self.tmpdir / "test_real.py").write_text("NEW\n", encoding="utf-8")
+        _git(self.tmpdir, "add", ".")
+        _git(self.tmpdir, "commit", "-q", "-m", "fix")
+
+    def test_excludes_substring_match_but_includes_real_test(self):
+        old_cwd = os.getcwd()
+        os.chdir(self.tmpdir)
+        try:
+            result = verify.changed_test_files("base", "fix")
+        finally:
+            os.chdir(old_cwd)
+        self.assertNotIn("latest_prices.py", result)
+        self.assertIn("test_real.py", result)
+
+
 class WorktreeAddFailureTest(unittest.TestCase):
     """Reproduces the exact scenario from issue #6: the target branch is
     already checked out in the primary working tree (as build.py used to
