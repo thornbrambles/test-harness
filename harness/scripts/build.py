@@ -75,8 +75,34 @@ def main() -> int:
     )
 
     lib.set_state_label(issue, "in-progress")
-    lib.run(["claude", "-p", prompt, "--allowedTools", "Bash,Read,Write,Edit,Grep,Glob"])
+    before_sha = lib.run(["git", "rev-parse", "HEAD"]).stdout.strip()
+    claude_result = lib.run(["claude", "-p", prompt, "--allowedTools", "Bash,Read,Write,Edit,Grep,Glob"])
     lib.bump_counter("daily_claude_calls")
+    after_sha = lib.run(["git", "rev-parse", "HEAD"]).stdout.strip()
+    commits_made = after_sha != before_sha
+
+    # A crashed/errored claude invocation or one that made no commits at all
+    # is an infrastructure failure, not a rejected fix -- don't hand it to
+    # verify.py as a normal candidate (it would just burn a retry on the
+    # unrelated "no test file changed" gate check) or spend a retry here.
+    if claude_result.returncode != 0 or not commits_made:
+        detail = (claude_result.stderr or claude_result.stdout or "").strip()
+        lib.log_event(
+            "build_infra_failure",
+            issue,
+            {
+                "branch": branch,
+                "retry": str(retry),
+                "returncode": str(claude_result.returncode),
+                "commits_made": str(commits_made),
+                "detail": detail[-2000:],
+            },
+        )
+        lib.set_state_label(issue, "needs-human")
+        # Leave HEAD on main: see comment below.
+        lib.run(["git", "checkout", "main"])
+        print(f"BUILD FAILED: claude exited {claude_result.returncode}, commits_made={commits_made}")
+        return 1
 
     # Safety net: the Builder is instructed to push+PR itself now, but if it
     # didn't, make sure the branch is at least on origin.
