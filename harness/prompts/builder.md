@@ -20,8 +20,8 @@ Instructions:
 4. Do not touch: {{FORBIDDEN_PATH_REGEX}}
 5. Keep the diff scoped to this issue only. Do not refactor unrelated code.
    Before finishing, run `git diff --stat main` and confirm the total
-   changed-lines count (insertions + deletions) is under 400 — the gate's
-   MAX_DIFF_LINES limit. Unlike a Verifier rejection, a gate failure for an
+   changed-lines count (insertions + deletions) is under {{MAX_DIFF_LINES}} —
+   the gate's MAX_DIFF_LINES limit. Unlike a Verifier rejection, a gate failure for an
    oversized diff does NOT get a retry: it goes straight to needs-human on
    the spot. If the full fix would exceed the budget, implement only the
    smallest piece that resolves the issue and note the remaining scope in

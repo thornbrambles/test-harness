@@ -76,7 +76,7 @@ class BuildLeavesMainCheckedOutTest(unittest.TestCase):
 
     def test_leaves_head_on_main_after_finishing(self):
         with mock.patch.object(lib, "run", side_effect=self._fake_run), \
-             mock.patch.object(lib, "load_config", return_value={"FORBIDDEN_PATH_REGEX": "migrations/"}), \
+             mock.patch.object(lib, "load_config", return_value={"FORBIDDEN_PATH_REGEX": "migrations/", "MAX_DIFF_LINES": "400"}), \
              mock.patch.object(lib, "bump_counter"), \
              mock.patch.object(lib, "log_event"), \
              mock.patch.object(sys, "argv", ["build.py", "1"]):
@@ -89,7 +89,7 @@ class BuildLeavesMainCheckedOutTest(unittest.TestCase):
         # This is the actual failure mode from issue #6: verify.py runs
         # `git worktree add <workdir> <branch>` right after build.py exits.
         with mock.patch.object(lib, "run", side_effect=self._fake_run), \
-             mock.patch.object(lib, "load_config", return_value={"FORBIDDEN_PATH_REGEX": "migrations/"}), \
+             mock.patch.object(lib, "load_config", return_value={"FORBIDDEN_PATH_REGEX": "migrations/", "MAX_DIFF_LINES": "400"}), \
              mock.patch.object(lib, "bump_counter"), \
              mock.patch.object(lib, "log_event"), \
              mock.patch.object(sys, "argv", ["build.py", "1"]):
@@ -147,7 +147,7 @@ class BuildInfraFailureTest(unittest.TestCase):
 
     def _run_build(self, claude_returncode, make_commit):
         with mock.patch.object(lib, "run", side_effect=self._fake_run(claude_returncode, make_commit)), \
-             mock.patch.object(lib, "load_config", return_value={"FORBIDDEN_PATH_REGEX": "migrations/"}), \
+             mock.patch.object(lib, "load_config", return_value={"FORBIDDEN_PATH_REGEX": "migrations/", "MAX_DIFF_LINES": "400"}), \
              mock.patch.object(lib, "bump_counter"), \
              mock.patch.object(lib, "log_event") as mock_log, \
              mock.patch.object(lib, "set_state_label") as mock_label, \
@@ -184,6 +184,64 @@ class BuildInfraFailureTest(unittest.TestCase):
         logged_events = [c.args[0] for c in mock_log.call_args_list]
         self.assertIn("build_complete", logged_events)
         self.assertNotIn("build_infra_failure", logged_events)
+
+
+class BuildPromptUsesConfiguredMaxDiffLinesTest(unittest.TestCase):
+    """Tests for issue #64: builder.md used to hardcode the literal "400" as
+    the diff-size limit shown to the Builder, instead of templating
+    {{MAX_DIFF_LINES}} from config.env like FORBIDDEN_PATH_REGEX already is.
+    If an operator (or the Tuner) changed MAX_DIFF_LINES away from 400, the
+    Builder's self-check would silently keep comparing against the stale
+    hardcoded value. These tests assert the real builder.md template is
+    rendered with the configured MAX_DIFF_LINES value baked into the prompt
+    handed to `claude`, using a config value other than 400 so the test
+    would fail on the old hardcoded-"400" prompt text."""
+
+    def setUp(self):
+        self.repo_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.repo_dir, ignore_errors=True))
+
+        _git(self.repo_dir, "init", "-q")
+        _git(self.repo_dir, "config", "user.email", "test@example.com")
+        _git(self.repo_dir, "config", "user.name", "Test")
+        (self.repo_dir / "file.txt").write_text("base\n", encoding="utf-8")
+        _git(self.repo_dir, "add", ".")
+        _git(self.repo_dir, "commit", "-q", "-m", "base")
+        _git(self.repo_dir, "branch", "-M", "main")
+
+    def test_prompt_reflects_configured_max_diff_lines(self):
+        captured_prompt = {}
+
+        def _fake_run(cmd, **kwargs):
+            if cmd[0] == "git":
+                return subprocess.run(cmd, cwd=self.repo_dir, text=True, capture_output=True)
+            if cmd[0] == "gh" and cmd[-1] == ".labels[].name":
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if cmd[0] == "gh" and cmd[-1] == ".body":
+                return SimpleNamespace(returncode=0, stdout="Fix the widget.\n", stderr="")
+            if cmd[0] == "claude":
+                captured_prompt["text"] = cmd[cmd.index("-p") + 1]
+                (self.repo_dir / "file.txt").write_text("fixed\n", encoding="utf-8")
+                _git(self.repo_dir, "add", ".")
+                _git(self.repo_dir, "commit", "-q", "-m", "builder commit")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(lib, "run", side_effect=_fake_run), \
+             mock.patch.object(
+                 lib, "load_config",
+                 return_value={"FORBIDDEN_PATH_REGEX": "migrations/", "MAX_DIFF_LINES": "250"},
+             ), \
+             mock.patch.object(lib, "bump_counter"), \
+             mock.patch.object(lib, "log_event"), \
+             mock.patch.object(sys, "argv", ["build.py", "1"]):
+            rc = build.main()
+
+        self.assertEqual(rc, 0)
+        prompt = captured_prompt["text"]
+        self.assertIn("under 250", prompt)
+        self.assertNotIn("{{MAX_DIFF_LINES}}", prompt)
+        self.assertNotIn("under 400", prompt)
 
 
 class RenderSinglePassSubstitutionTest(unittest.TestCase):

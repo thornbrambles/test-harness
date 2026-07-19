@@ -76,6 +76,7 @@ def main() -> int:
             "BRANCH_NAME": branch,
             "RETRY_COUNT": str(retry),
             "FORBIDDEN_PATH_REGEX": config["FORBIDDEN_PATH_REGEX"],
+            "MAX_DIFF_LINES": config["MAX_DIFF_LINES"],
             "ISSUE_BODY": issue_body,
             "PRIOR_FEEDBACK": prior_feedback,
         },
