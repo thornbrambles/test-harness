@@ -220,6 +220,59 @@ class PreFixTestOutputPythonDispatchTest(unittest.TestCase):
         self.assertNotIn("Could not find a config file", output)
 
 
+class PreFixTestOutputPythonDiscoveryStyleTest(unittest.TestCase):
+    """A .py test file with no `if __name__ == "__main__"` guard (the normal
+    shape for a unittest.TestCase meant to run via discovery) must still have
+    its test methods actually executed, not just get silently imported
+    (issue #52). Plain `python file.py` never calls unittest.main() here, so
+    it would previously exit 0 with empty output regardless of whether the
+    test actually discriminates between pre-fix and post-fix source."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
+
+        _git(self.tmpdir, "init", "-q")
+        _git(self.tmpdir, "config", "user.email", "test@example.com")
+        _git(self.tmpdir, "config", "user.name", "Test")
+
+        (self.tmpdir / "src.py").write_text(
+            "def add(a, b):\n    return a - b\n", encoding="utf-8"
+        )
+        (self.tmpdir / "mytest.py").write_text(
+            "import unittest\nfrom src import add\n\n"
+            "class AddTest(unittest.TestCase):\n"
+            "    def test_add(self):\n"
+            "        self.assertEqual(add(2, 2), 4)\n",
+            encoding="utf-8",
+        )
+        _git(self.tmpdir, "add", ".")
+        _git(self.tmpdir, "commit", "-q", "-m", "base")
+        _git(self.tmpdir, "branch", "base")
+
+        _git(self.tmpdir, "checkout", "-q", "-b", "fix")
+        (self.tmpdir / "src.py").write_text(
+            "def add(a, b):\n    return a + b\n", encoding="utf-8"
+        )
+        _git(self.tmpdir, "add", ".")
+        _git(self.tmpdir, "commit", "-q", "-m", "fix")
+
+    def _run_in_repo(self, fn):
+        old_cwd = os.getcwd()
+        os.chdir(self.tmpdir)
+        try:
+            return fn()
+        finally:
+            os.chdir(old_cwd)
+
+    def test_no_main_guard_test_case_still_runs_and_fails_against_pre_fix_source(self):
+        output = self._run_in_repo(
+            lambda: verify.pre_fix_test_output("base", "fix", ["mytest.py"])
+        )
+        self.assertIn("FAILED", output)
+        self.assertIn("Ran 1 test", output)
+
+
 class ChangedTestFilesFalsePositiveTest(unittest.TestCase):
     """changed_test_files must not treat a file that merely contains "test"
     or "spec" as a substring (e.g. latest_prices.py) as a test file (issue

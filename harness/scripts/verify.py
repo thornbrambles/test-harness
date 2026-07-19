@@ -92,7 +92,14 @@ def pre_fix_test_output(base: str, branch: str, test_files: list[str]) -> str:
         if f.endswith(".sh"):
             result = lib.run(["bash", f])
         elif f.endswith(".py"):
-            result = lib.run(["python", f])
+            # Dispatch through unittest (matching detect_test_cmd()'s own
+            # convention) instead of `python f`, which only executes tests
+            # for files with an `if __name__ == "__main__"` guard -- a
+            # discovery-style file (TestCase subclass, no guard) would
+            # otherwise just get imported, run zero assertions, and exit 0
+            # with no output (issue #52).
+            module = f[:-len(".py")].replace("\\", "/").replace("/", ".")
+            result = lib.run(["python", "-m", "unittest", module])
         else:
             result = lib.run(["npx", "jest", f])
         chunks.append(f"--- {f} ---\n{result.stdout + result.stderr}")
