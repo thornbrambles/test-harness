@@ -142,6 +142,25 @@ def set_state_label(issue, new_state: str) -> None:
     run(["gh", "issue", "edit", str(issue), "--add-label", f"state:{new_state}"])
 
 
+# --- test-file detection ---
+
+# Anchored to filename/path conventions actually used by target repos
+# (test_foo.py, tests/foo.py, foo_test.go, foo.spec.js, spec/foo_spec.rb,
+# ...) rather than a bare "test|spec" substring search, which also matches
+# non-test files like src/latest.py, contest_winners.py, or specification.md
+# (issue #7).
+TEST_FILE_RE = re.compile(
+    r"(^|/)(tests?|specs?)(/|$)"
+    r"|(^|/)(test|spec)_"
+    r"|[._-](test|spec)[._-]",
+    re.IGNORECASE,
+)
+
+
+def is_test_file(path: str) -> bool:
+    return bool(TEST_FILE_RE.search(path))
+
+
 # --- config.env loader ---
 
 def load_config(path) -> dict[str, str]:

@@ -14,7 +14,6 @@ import gate
 import lib
 
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
-TEST_FILE_RE = re.compile(r"test|spec", re.IGNORECASE)
 
 
 def _shallow_glob(pattern: str, max_depth: int = 4):
@@ -54,7 +53,7 @@ def run_test_cmd(cmd: list[str] | None) -> str:
 
 def changed_test_files(base: str, branch: str) -> list[str]:
     names = lib.run(["git", "diff", "--name-only", base, branch]).stdout.splitlines()
-    return [f for f in names if f and TEST_FILE_RE.search(f)]
+    return [f for f in names if f and lib.is_test_file(f)]
 
 
 def pre_fix_test_output(base: str, branch: str, test_files: list[str]) -> str:
