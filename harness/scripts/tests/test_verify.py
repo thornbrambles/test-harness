@@ -92,6 +92,63 @@ class PreFixTestOutputTest(unittest.TestCase):
         self.assertIn("skipped", output)
 
 
+class PreFixTestOutputNewSourceFileTest(unittest.TestCase):
+    """Issue #10: if the fix's logic lives in a brand-new source file (not
+    just a modified one), `git checkout base -- .` never deletes it, since
+    that command only updates paths that exist in `base`. The pre-fix run
+    must not see the new file's post-fix content."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
+
+        _git(self.tmpdir, "init", "-q")
+        _git(self.tmpdir, "config", "user.email", "test@example.com")
+        _git(self.tmpdir, "config", "user.name", "Test")
+
+        (self.tmpdir / "README.txt").write_text("base\n", encoding="utf-8")
+        _git(self.tmpdir, "add", ".")
+        _git(self.tmpdir, "commit", "-q", "-m", "base")
+        _git(self.tmpdir, "branch", "base")
+
+        _git(self.tmpdir, "checkout", "-q", "-b", "fix")
+        # The fix adds a brand-new module the new test imports/uses.
+        (self.tmpdir / "newmodule.py").write_text(
+            "def value():\n    return 'NEW_MODULE_VALUE'\n", encoding="utf-8"
+        )
+        (self.tmpdir / "mytest.py").write_text(
+            "import newmodule\nprint(newmodule.value())\n", encoding="utf-8"
+        )
+        _git(self.tmpdir, "add", ".")
+        _git(self.tmpdir, "commit", "-q", "-m", "fix")
+
+    def _run_in_repo(self, fn):
+        old_cwd = os.getcwd()
+        os.chdir(self.tmpdir)
+        try:
+            return fn()
+        finally:
+            os.chdir(old_cwd)
+
+    def test_new_source_file_is_removed_before_pre_fix_run(self):
+        output = self._run_in_repo(
+            lambda: verify.pre_fix_test_output("base", "fix", ["mytest.py"])
+        )
+        # Against genuinely old behavior, newmodule.py must not exist, so
+        # the new test should fail (ModuleNotFoundError), not print the
+        # post-fix value.
+        self.assertNotIn("NEW_MODULE_VALUE", output)
+
+    def test_new_source_file_is_restored_afterwards(self):
+        self._run_in_repo(
+            lambda: verify.pre_fix_test_output("base", "fix", ["mytest.py"])
+        )
+        self.assertEqual(
+            (self.tmpdir / "newmodule.py").read_text(encoding="utf-8"),
+            "def value():\n    return 'NEW_MODULE_VALUE'\n",
+        )
+
+
 class DetectTestCmdPythonFallbackTest(unittest.TestCase):
     """Without a package.json test script or run_tests.sh, a nested
     test_*.py layout must still be picked up (issue #2 retry feedback: this

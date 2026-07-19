@@ -62,11 +62,28 @@ def pre_fix_test_output(base: str, branch: str, test_files: list[str]) -> str:
     files at their post-fix content, then run just those test files. (The
     old bash version reverted the test files too via `checkout base -- .`,
     which made this check meaningless for anything but a brand-new test
-    file -- see issue #2.)"""
+    file -- see issue #2.)
+
+    `git checkout base -- .` only *updates* paths that exist in `base`; it
+    never deletes paths that are absent from `base` but present in the
+    branch's working tree. So any file the fix newly added (e.g. a new
+    module the fix's logic lives in) would survive the "revert to base"
+    step untouched, leaving the pre-fix run still exercising post-fix
+    source -- see issue #10. Explicitly remove those added paths before
+    running the pre-fix tests.
+    """
     if not test_files:
         return "pre-fix run skipped (no isolated test target configured)"
 
     lib.run(["git", "checkout", base, "--", "."])
+    added = [
+        f for f in lib.run(
+            ["git", "diff", "--name-only", "--diff-filter=A", base, branch]
+        ).stdout.splitlines()
+        if f
+    ]
+    if added:
+        lib.run(["git", "rm", "-f", "--ignore-unmatch", "--", *added])
     lib.run(["git", "checkout", branch, "--", *test_files])
 
     chunks = []
