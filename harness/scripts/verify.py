@@ -56,6 +56,27 @@ def changed_test_files(base: str, branch: str) -> list[str]:
     return [f for f in names if f and lib.is_test_file(f)]
 
 
+def _test_runner_cmd(f: str) -> list[str] | None:
+    """Maps a changed test file to the command that understands its actual
+    syntax. `is_test_file()` (lib.py) recognizes test conventions across
+    several languages (foo_test.go, spec/foo_spec.rb, ...), but running all
+    of them through `npx jest` -- meaningful only for JS/TS -- produced
+    noise at best and a false "pre-fix test failed" signal at worst when
+    jest choked on Go/Ruby syntax (issue #55). Returns None when no runner
+    matches, so the caller can say so explicitly instead of guessing jest."""
+    if f.endswith(".sh"):
+        return ["bash", f]
+    if f.endswith(".py"):
+        return ["python", f]
+    if f.endswith(".go"):
+        return ["go", "test", f]
+    if f.endswith(".rb"):
+        return ["rspec", f]
+    if f.endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")):
+        return ["npx", "jest", f]
+    return None
+
+
 def pre_fix_test_output(base: str, branch: str, test_files: list[str]) -> str:
     """Revert source to the pre-fix commit while keeping the new/changed test
     files at their post-fix content, then run just those test files. (The
@@ -89,12 +110,11 @@ def pre_fix_test_output(base: str, branch: str, test_files: list[str]) -> str:
     for f in test_files:
         if not Path(f).is_file():
             continue
-        if f.endswith(".sh"):
-            result = lib.run(["bash", f])
-        elif f.endswith(".py"):
-            result = lib.run(["python", f])
-        else:
-            result = lib.run(["npx", "jest", f])
+        cmd = _test_runner_cmd(f)
+        if cmd is None:
+            chunks.append(f"--- {f} ---\nno matching test runner for this file type; skipped")
+            continue
+        result = lib.run(cmd)
         chunks.append(f"--- {f} ---\n{result.stdout + result.stderr}")
 
     lib.run(["git", "checkout", branch, "--", "."])

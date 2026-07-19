@@ -220,6 +220,82 @@ class PreFixTestOutputPythonDispatchTest(unittest.TestCase):
         self.assertNotIn("Could not find a config file", output)
 
 
+class PreFixTestOutputRunnerDispatchTest(unittest.TestCase):
+    """Test files that `is_test_file()` recognizes for languages other than
+    Python/Shell/JS must be dispatched to the runner that actually
+    understands their syntax, not silently run through `npx jest` (issue
+    #55). An unrecognized extension must produce an explicit "no runner"
+    message rather than a jest invocation that fails for the wrong reason.
+    """
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
+
+        _git(self.tmpdir, "init", "-q")
+        _git(self.tmpdir, "config", "user.email", "test@example.com")
+        _git(self.tmpdir, "config", "user.name", "Test")
+
+        (self.tmpdir / "foo_test.go").write_text("package foo\n", encoding="utf-8")
+        (self.tmpdir / "foo_spec.rb").write_text("describe('foo') {}\n", encoding="utf-8")
+        (self.tmpdir / "spec").mkdir()
+        (self.tmpdir / "spec" / "foo_spec.txt").write_text("OLD\n", encoding="utf-8")
+        _git(self.tmpdir, "add", ".")
+        _git(self.tmpdir, "commit", "-q", "-m", "base")
+        _git(self.tmpdir, "branch", "base")
+
+        _git(self.tmpdir, "checkout", "-q", "-b", "fix")
+        (self.tmpdir / "foo_test.go").write_text("package foo\n// updated\n", encoding="utf-8")
+        (self.tmpdir / "foo_spec.rb").write_text("describe('foo') { updated }\n", encoding="utf-8")
+        (self.tmpdir / "spec" / "foo_spec.txt").write_text("NEW\n", encoding="utf-8")
+        _git(self.tmpdir, "add", ".")
+        _git(self.tmpdir, "commit", "-q", "-m", "fix")
+
+    def _run_in_repo(self, fn):
+        old_cwd = os.getcwd()
+        os.chdir(self.tmpdir)
+        try:
+            return fn()
+        finally:
+            os.chdir(old_cwd)
+
+    def _dispatched_commands(self, test_files):
+        calls = []
+        real_run = lib.run
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] != "git":
+                calls.append(cmd)
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return real_run(cmd, **kwargs)
+
+        with mock.patch.object(lib, "run", side_effect=fake_run):
+            self._run_in_repo(
+                lambda: verify.pre_fix_test_output("base", "fix", test_files)
+            )
+        return calls
+
+    def test_go_test_file_dispatched_to_go_test_not_jest(self):
+        calls = self._dispatched_commands(["foo_test.go"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0], ["go", "test", "foo_test.go"])
+
+    def test_rb_spec_file_dispatched_to_rspec_not_jest(self):
+        calls = self._dispatched_commands(["foo_spec.rb"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0], ["rspec", "foo_spec.rb"])
+
+    def test_unrecognized_extension_reports_no_runner_instead_of_jest(self):
+        calls = self._dispatched_commands(["spec/foo_spec.txt"])
+        self.assertEqual(calls, [])
+
+    def test_unrecognized_extension_output_says_skipped(self):
+        output = self._run_in_repo(
+            lambda: verify.pre_fix_test_output("base", "fix", ["spec/foo_spec.txt"])
+        )
+        self.assertIn("no matching test runner", output)
+
+
 class ChangedTestFilesFalsePositiveTest(unittest.TestCase):
     """changed_test_files must not treat a file that merely contains "test"
     or "spec" as a substring (e.g. latest_prices.py) as a test file (issue
