@@ -28,8 +28,18 @@ def main() -> int:
     branch = f"tuner/{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
     lib.run(["git", "checkout", "-B", branch, "main"])
 
-    lib.run(["claude", "-p", prompt, "--allowedTools", "Bash(git:*),Bash(gh:*),Read,Write,Edit"])
+    claude_result = lib.run(["claude", "-p", prompt, "--allowedTools", "Bash(git:*),Bash(gh:*),Read,Write,Edit"])
     lib.bump_counter("daily_claude_calls")
+
+    if claude_result.returncode != 0:
+        detail = (claude_result.stderr or claude_result.stdout or "").strip()
+        lib.log_event(
+            "tune_infra_failure",
+            "-",
+            {"branch": branch, "returncode": str(claude_result.returncode), "detail": detail[-2000:]},
+        )
+        lib.run(["git", "checkout", "main"])
+        return 1
 
     diff = lib.run(["git", "diff", "--quiet", "main", "--", "prompts/", "config.env"])
     if diff.returncode != 0:
