@@ -137,5 +137,106 @@ class CheckHumanReopenTest(RejectRateTestBase):
         mock_run.assert_not_called()
 
 
+class MainTest(unittest.TestCase):
+    """overseer.main() ties the two circuit breakers plus the daily-cap
+    short-circuits together; this exercises the ordering directly (issue
+    #85) since none of it was covered before -- including that a failing
+    earlier check must prevent later checks from ever running."""
+
+    CONFIG = {
+        "MAX_DAILY_CYCLES": "50",
+        "MAX_DAILY_CLAUDE_CALLS": "200",
+        "HALT_ON_HUMAN_REOPEN": "true",
+    }
+
+    def setUp(self):
+        patchers = [
+            mock.patch.object(lib, "load_config", return_value=dict(self.CONFIG)),
+            mock.patch.object(lib, "reset_daily_counters_if_new_day"),
+            mock.patch.object(lib, "halt_daemon"),
+            mock.patch.object(lib, "log_event"),
+            mock.patch.object(overseer, "check_reject_rate", return_value=(True, "")),
+            mock.patch.object(overseer, "check_human_reopen", return_value=(True, "")),
+        ]
+        self.mocks = {}
+        for patcher in patchers:
+            name = patcher.attribute
+            self.mocks[name] = patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _set_counters(self, daily_cycles=0, daily_claude_calls=0):
+        def fake(key):
+            return {"daily_cycles": daily_cycles, "daily_claude_calls": daily_claude_calls}[key]
+        patcher = mock.patch.object(lib, "get_counter", side_effect=fake)
+        self.mocks["get_counter"] = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_daily_cycle_cap_halts_before_other_checks(self):
+        self._set_counters(daily_cycles=50, daily_claude_calls=0)
+
+        rc = overseer.main()
+
+        self.assertEqual(rc, 0)
+        self.mocks["halt_daemon"].assert_called_once()
+        self.assertIn("cycle cap", self.mocks["halt_daemon"].call_args[0][0])
+        overseer.check_reject_rate.assert_not_called()
+        overseer.check_human_reopen.assert_not_called()
+        lib.log_event.assert_not_called()
+
+    def test_daily_claude_call_cap_halts_before_reject_rate_check(self):
+        self._set_counters(daily_cycles=0, daily_claude_calls=200)
+
+        rc = overseer.main()
+
+        self.assertEqual(rc, 0)
+        self.mocks["halt_daemon"].assert_called_once()
+        self.assertIn("claude call cap", self.mocks["halt_daemon"].call_args[0][0])
+        overseer.check_reject_rate.assert_not_called()
+        overseer.check_human_reopen.assert_not_called()
+
+    def test_failing_reject_rate_halts_before_human_reopen_check(self):
+        self._set_counters()
+        overseer.check_reject_rate.return_value = (False, "reject rate too high")
+
+        rc = overseer.main()
+
+        self.assertEqual(rc, 0)
+        self.mocks["halt_daemon"].assert_called_once_with("reject rate too high")
+        overseer.check_human_reopen.assert_not_called()
+        lib.log_event.assert_not_called()
+
+    def test_human_reopen_only_checked_when_config_enabled(self):
+        self._set_counters()
+        config = dict(self.CONFIG)
+        config["HALT_ON_HUMAN_REOPEN"] = "false"
+        lib.load_config.return_value = config
+
+        rc = overseer.main()
+
+        self.assertEqual(rc, 0)
+        overseer.check_human_reopen.assert_not_called()
+        self.mocks["halt_daemon"].assert_not_called()
+        lib.log_event.assert_called_once_with("overseer_check", "-", {})
+
+    def test_failing_human_reopen_check_halts(self):
+        self._set_counters()
+        overseer.check_human_reopen.return_value = (False, "issue #5 was auto-closed but is now reopened")
+
+        rc = overseer.main()
+
+        self.assertEqual(rc, 0)
+        self.mocks["halt_daemon"].assert_called_once_with("issue #5 was auto-closed but is now reopened")
+        lib.log_event.assert_not_called()
+
+    def test_all_checks_pass_logs_ok_and_returns_zero(self):
+        self._set_counters()
+
+        rc = overseer.main()
+
+        self.assertEqual(rc, 0)
+        self.mocks["halt_daemon"].assert_not_called()
+        lib.log_event.assert_called_once_with("overseer_check", "-", {})
+
+
 if __name__ == "__main__":
     unittest.main()
