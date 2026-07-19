@@ -18,6 +18,7 @@ the same way test_build.py mocks lib.run for git/gh calls.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import tempfile
@@ -176,6 +177,51 @@ class CounterStateTest(unittest.TestCase):
         state = json.loads(self.state_file.read_text(encoding="utf-8"))
         self.assertEqual(state["daily_cycles"], 5)
         self.assertEqual(state["daily_claude_calls"], 9)
+
+    def test_read_state_falls_back_to_default_on_corrupt_json(self):
+        # Simulates a process killed mid-write leaving a truncated file
+        # (issue #50): the old code did json.loads() with no try/except,
+        # so any caller (bump_counter, get_counter, get_last_run, ...)
+        # would raise JSONDecodeError and crash the daemon loop forever.
+        self.state_file.write_text('{"daily_cycles": 3, "date": "2020', encoding="utf-8")
+
+        state = lib._read_state()
+
+        self.assertEqual(state, lib._DEFAULT_STATE)
+
+    def test_bump_counter_recovers_after_corrupt_state_file(self):
+        self.state_file.write_text('{"daily_cycles": 3, truncated', encoding="utf-8")
+
+        lib.bump_counter("daily_cycles")
+
+        self.assertEqual(lib.get_counter("daily_cycles"), 1)
+
+    def test_write_state_uses_replace_not_truncating_write(self):
+        # Regression guard for the truncate-then-write race: _write_state
+        # must never leave STATE_FILE in a state where reading it can see
+        # a truncated/partial write. We assert this by checking the write
+        # goes through a temp file + os.replace() rather than
+        # Path.write_text() directly on STATE_FILE.
+        original_replace = os.replace
+        replace_calls = []
+
+        def spy_replace(src, dst):
+            replace_calls.append((Path(src), Path(dst)))
+            # At the moment of replace, the temp file must already hold
+            # the full new content (i.e. no truncate-in-place on the
+            # real state file).
+            self.assertNotEqual(Path(src), self.state_file)
+            return original_replace(src, dst)
+
+        with mock.patch("lib.os.replace", side_effect=spy_replace):
+            lib.bump_counter("daily_cycles")
+
+        self.assertEqual(len(replace_calls), 1)
+        _, dst = replace_calls[0]
+        self.assertEqual(dst, self.state_file)
+        # No leftover temp file after a successful write.
+        leftovers = [p for p in self.tmpdir.iterdir() if p != self.state_file]
+        self.assertEqual(leftovers, [])
 
 
 if __name__ == "__main__":

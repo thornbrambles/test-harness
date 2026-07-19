@@ -39,7 +39,7 @@ HALT_FILE = HARNESS_DIR / "halt.lock"
 
 HARNESS_DIR.mkdir(parents=True, exist_ok=True)
 if not STATE_FILE.exists():
-    STATE_FILE.write_text(json.dumps({"daily_cycles": 0, "daily_claude_calls": 0, "date": ""}))
+    STATE_FILE.write_text(json.dumps({"daily_cycles": 0, "daily_claude_calls": 0, "date": ""}), encoding="utf-8")
 
 
 def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -86,12 +86,27 @@ def halt_daemon(reason: str) -> None:
     log_event("halt", "-", {"reason": reason})
 
 
+_DEFAULT_STATE = {"daily_cycles": 0, "daily_claude_calls": 0, "date": ""}
+
+
 def _read_state() -> dict:
-    return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    try:
+        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        # A prior write could have been interrupted (crash/OOM/Ctrl-C)
+        # leaving a truncated/partial file. Fall back to the documented
+        # default rather than crashing the daemon loop on every tick.
+        return dict(_DEFAULT_STATE)
 
 
 def _write_state(state: dict) -> None:
-    STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
+    # Write to a temp file in the same directory and os.replace() it over
+    # STATE_FILE, which is atomic on both POSIX and Windows -- unlike
+    # write_text(), which truncates the file before writing and can leave
+    # invalid partial JSON behind if the process dies mid-write.
+    tmp = STATE_FILE.with_suffix(f"{STATE_FILE.suffix}.tmp{os.getpid()}")
+    tmp.write_text(json.dumps(state), encoding="utf-8")
+    os.replace(tmp, STATE_FILE)
 
 
 def reset_daily_counters_if_new_day() -> None:
