@@ -59,6 +59,67 @@ class ExtractBranchTest(unittest.TestCase):
         self.assertIsNone(run.extract_branch(result))
 
 
+class RunBuildStageTest(unittest.TestCase):
+    def test_no_ready_issue_never_invokes_build_or_verify(self):
+        issue_result = SimpleNamespace(stdout="null\n", stderr="")
+        build_runner = mock.Mock()
+        verify_runner = mock.Mock()
+
+        run.run_build_stage(issue_result, build_runner, verify_runner)
+
+        build_runner.assert_not_called()
+        verify_runner.assert_not_called()
+
+    def test_empty_issue_list_output_never_invokes_build_or_verify(self):
+        # gh returns an empty string (not the literal "null") when the -q
+        # filter finds nothing to index into -- must be guarded too.
+        issue_result = SimpleNamespace(stdout="", stderr="")
+        build_runner = mock.Mock()
+        verify_runner = mock.Mock()
+
+        run.run_build_stage(issue_result, build_runner, verify_runner)
+
+        build_runner.assert_not_called()
+        verify_runner.assert_not_called()
+
+    def test_build_success_invokes_verify_with_issue_and_branch(self):
+        issue_result = SimpleNamespace(stdout="42\n", stderr="")
+        build_runner = mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="cloning...\nauto/issue-42\n", stderr="")
+        )
+        verify_runner = mock.Mock()
+
+        run.run_build_stage(issue_result, build_runner, verify_runner)
+
+        build_runner.assert_called_once_with("42")
+        verify_runner.assert_called_once_with("verify.py", "42", "auto/issue-42")
+
+    def test_build_failure_never_invokes_verify(self):
+        # build_infra_failure or similar: build.py exits nonzero, so
+        # extract_branch() returns None and verify.py must not run.
+        issue_result = SimpleNamespace(stdout="42\n", stderr="")
+        build_runner = mock.Mock(
+            return_value=SimpleNamespace(returncode=1, stdout="", stderr="boom")
+        )
+        verify_runner = mock.Mock()
+
+        run.run_build_stage(issue_result, build_runner, verify_runner)
+
+        build_runner.assert_called_once_with("42")
+        verify_runner.assert_not_called()
+
+    def test_build_success_but_no_branch_line_never_invokes_verify(self):
+        issue_result = SimpleNamespace(stdout="42\n", stderr="")
+        build_runner = mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+        verify_runner = mock.Mock()
+
+        run.run_build_stage(issue_result, build_runner, verify_runner)
+
+        verify_runner.assert_not_called()
+
+
 class DueTest(unittest.TestCase):
     def setUp(self):
         self.tmpdir = Path(tempfile.mkdtemp())

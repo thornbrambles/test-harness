@@ -31,6 +31,23 @@ def extract_branch(build_result: subprocess.CompletedProcess) -> str | None:
     return lines[-1] if build_result.returncode == 0 and lines else None
 
 
+def run_build_stage(issue_result, build_runner, verify_runner=run_stage) -> None:
+    """Decides whether to hand a ready issue to the Builder and, if it
+    produced a branch, chain into the Verifier. Pulled out of main()'s
+    `while True` loop so the ready/no-ready and branch/no-branch paths can
+    be exercised without running the daemon (see issue #76)."""
+    issue = issue_result.stdout.strip()
+    if issue and issue != "null":
+        print(f"=== work: issue #{issue} ===")
+        build_result = build_runner(issue)
+        print(build_result.stdout + build_result.stderr)
+        branch = extract_branch(build_result)
+        if branch:
+            verify_runner("verify.py", issue, branch)
+    else:
+        print("no ready issues")
+
+
 def due(stage: str, interval_seconds: int) -> bool:
     """A stage is due once its own interval has elapsed since its own last
     run. Last-run times are persisted in .harness/state.json (via
@@ -73,18 +90,12 @@ def main() -> int:
                 "gh", "issue", "list", "--state", "open", "--label", "state:ready",
                 "--limit", "1", "--json", "number", "-q", ".[0].number",
             ])
-            issue = issue_result.stdout.strip()
-            if issue and issue != "null":
-                print(f"=== work: issue #{issue} ===")
-                # Captured (not streamed) like the old run.sh, which relied on
-                # command substitution to grab build.sh's final printed line.
-                build_result = lib.run([sys.executable, str(SCRIPTS_DIR / "build.py"), issue])
-                print(build_result.stdout + build_result.stderr)
-                branch = extract_branch(build_result)
-                if branch:
-                    run_stage("verify.py", issue, branch)
-            else:
-                print("no ready issues")
+            # Captured (not streamed) like the old run.sh, which relied on
+            # command substitution to grab build.sh's final printed line.
+            run_build_stage(
+                issue_result,
+                lambda issue: lib.run([sys.executable, str(SCRIPTS_DIR / "build.py"), issue]),
+            )
             lib.set_last_run("build")
 
         if due("tune", lib.cfg_int(config, "TUNER_INTERVAL_SECONDS")):
