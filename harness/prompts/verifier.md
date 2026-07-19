@@ -18,6 +18,13 @@ Checks, in order — fail fast on the first one that doesn't hold:
 1. Do the new/changed tests FAIL against the pre-fix commit and PASS
    against this commit? If they pass on both, they don't test the bug —
    REJECT with reason "tests don't discriminate before/after fix."
+   Exception: if the diff touches ONLY test files (no non-test source
+   changed) and the issue is asking for missing test coverage on code
+   that is already correct, rather than a bug fix, this check does not
+   apply — such tests are expected to pass both before and after by
+   construction. In that case skip straight to confirming the new tests
+   genuinely exercise the code path the issue describes, with real
+   assertions rather than tautological ones, and continue to check 2.
 2. Does the diff actually address the issue as described, with no
    unrelated scope creep?
 3. Does the current test run pass in full (not just the new tests)?
