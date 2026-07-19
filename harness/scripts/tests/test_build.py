@@ -63,8 +63,15 @@ class BuildLeavesMainCheckedOutTest(unittest.TestCase):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd[0] == "gh" and cmd[-1] == ".body":
             return SimpleNamespace(returncode=0, stdout="Fix the widget.\n", stderr="")
-        # gh issue edit/comment, claude -p, git push (no remote configured
-        # in this throwaway repo) -- none of these are asserted on here.
+        if cmd[0] == "claude":
+            # Simulate a real Builder run: it edits a file and commits on
+            # the checked-out branch before build.py inspects HEAD again.
+            (self.repo_dir / "file.txt").write_text("fixed\n", encoding="utf-8")
+            _git(self.repo_dir, "add", ".")
+            _git(self.repo_dir, "commit", "-q", "-m", "builder commit")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        # gh issue edit/comment, git push (no remote configured in this
+        # throwaway repo) -- none of these are asserted on here.
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     def test_leaves_head_on_main_after_finishing(self):
@@ -95,6 +102,88 @@ class BuildLeavesMainCheckedOutTest(unittest.TestCase):
             cwd=self.repo_dir, text=True, capture_output=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class BuildInfraFailureTest(unittest.TestCase):
+    """Tests for issue #8: build.py used to ignore the claude subprocess's
+    outcome entirely and unconditionally push, label the issue in-review,
+    and log build_complete -- even when the Builder crashed or made no
+    commits at all. That silently burned a retry on what verify.py's gate
+    would then reject for the unrelated "no test file changed" reason,
+    masking a genuine infra failure as a rejected fix. These tests assert
+    build.main() instead detects the failure and routes straight to
+    needs-human without ever claiming in-review/build_complete."""
+
+    def setUp(self):
+        self.repo_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.repo_dir, ignore_errors=True))
+
+        _git(self.repo_dir, "init", "-q")
+        _git(self.repo_dir, "config", "user.email", "test@example.com")
+        _git(self.repo_dir, "config", "user.name", "Test")
+        (self.repo_dir / "file.txt").write_text("base\n", encoding="utf-8")
+        _git(self.repo_dir, "add", ".")
+        _git(self.repo_dir, "commit", "-q", "-m", "base")
+        _git(self.repo_dir, "branch", "-M", "main")
+
+    def _fake_run(self, claude_returncode, make_commit):
+        def _run(cmd, **kwargs):
+            if cmd[0] == "git":
+                return subprocess.run(cmd, cwd=self.repo_dir, text=True, capture_output=True)
+            if cmd[0] == "gh" and cmd[-1] == ".labels[].name":
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if cmd[0] == "gh" and cmd[-1] == ".body":
+                return SimpleNamespace(returncode=0, stdout="Fix the widget.\n", stderr="")
+            if cmd[0] == "claude":
+                if make_commit:
+                    (self.repo_dir / "file.txt").write_text("fixed\n", encoding="utf-8")
+                    _git(self.repo_dir, "add", ".")
+                    _git(self.repo_dir, "commit", "-q", "-m", "builder commit")
+                return SimpleNamespace(returncode=claude_returncode, stdout="", stderr="rate limited")
+            # gh issue edit/comment, git push (no remote configured in this
+            # throwaway repo) -- none of these are asserted on here.
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return _run
+
+    def _run_build(self, claude_returncode, make_commit):
+        with mock.patch.object(lib, "run", side_effect=self._fake_run(claude_returncode, make_commit)), \
+             mock.patch.object(lib, "load_config", return_value={"FORBIDDEN_PATH_REGEX": "migrations/"}), \
+             mock.patch.object(lib, "bump_counter"), \
+             mock.patch.object(lib, "log_event") as mock_log, \
+             mock.patch.object(lib, "set_state_label") as mock_label, \
+             mock.patch.object(sys, "argv", ["build.py", "1"]):
+            rc = build.main()
+        return rc, mock_log, mock_label
+
+    def test_nonzero_exit_routes_to_needs_human_without_burning_a_retry(self):
+        rc, mock_log, mock_label = self._run_build(claude_returncode=1, make_commit=False)
+
+        self.assertEqual(rc, 1)
+        mock_label.assert_any_call("1", "needs-human")
+        self.assertNotIn(mock.call("1", "in-review"), mock_label.call_args_list)
+        logged_events = [c.args[0] for c in mock_log.call_args_list]
+        self.assertIn("build_infra_failure", logged_events)
+        self.assertNotIn("build_complete", logged_events)
+
+    def test_zero_exit_but_no_commits_routes_to_needs_human(self):
+        # claude can exit 0 having decided to make no changes at all --
+        # that's still not a real build to hand to the Verifier.
+        rc, mock_log, mock_label = self._run_build(claude_returncode=0, make_commit=False)
+
+        self.assertEqual(rc, 1)
+        mock_label.assert_any_call("1", "needs-human")
+        logged_events = [c.args[0] for c in mock_log.call_args_list]
+        self.assertIn("build_infra_failure", logged_events)
+        self.assertNotIn("build_complete", logged_events)
+
+    def test_successful_build_still_reaches_in_review(self):
+        rc, mock_log, mock_label = self._run_build(claude_returncode=0, make_commit=True)
+
+        self.assertEqual(rc, 0)
+        mock_label.assert_any_call("1", "in-review")
+        logged_events = [c.args[0] for c in mock_log.call_args_list]
+        self.assertIn("build_complete", logged_events)
+        self.assertNotIn("build_infra_failure", logged_events)
 
 
 if __name__ == "__main__":
