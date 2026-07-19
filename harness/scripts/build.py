@@ -44,7 +44,12 @@ def render(template: str, values: dict[str, str]) -> str:
 
 def get_prior_feedback(issue) -> str:
     result = lib.run(["gh", "issue", "view", str(issue), "--json", "comments"])
-    comments = json.loads(result.stdout).get("comments", [])
+    if result.returncode != 0:
+        return ""
+    try:
+        comments = json.loads(result.stdout).get("comments", [])
+    except json.JSONDecodeError:
+        return ""
     reasons = [c["body"] for c in comments if c["body"].startswith("REASON:")]
     return "\n".join(reasons[-3:])
 

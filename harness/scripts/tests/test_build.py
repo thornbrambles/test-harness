@@ -282,6 +282,66 @@ class RetryReusesBranchTest(unittest.TestCase):
         self.assertIn(self.prior_sha, log)
 
 
+class GetPriorFeedbackGuardTest(unittest.TestCase):
+    """Tests for issue #44 (referenced by #86): get_prior_feedback used to
+    call json.loads() unconditionally on `gh issue view ... --json comments`
+    output. lib.run() never raises on a non-zero exit, so a failing or
+    rate-limited gh call left stdout empty or non-JSON and json.loads()
+    raised an unhandled JSONDecodeError, crashing build.py on every retry
+    attempt instead of being treated as absent feedback."""
+
+    def test_returns_empty_string_when_gh_call_fails(self):
+        with mock.patch.object(
+            lib, "run", return_value=SimpleNamespace(returncode=1, stdout="", stderr="rate limited")
+        ):
+            self.assertEqual(build.get_prior_feedback("1"), "")
+
+    def test_returns_empty_string_on_malformed_json(self):
+        with mock.patch.object(
+            lib, "run", return_value=SimpleNamespace(returncode=0, stdout="not json", stderr="")
+        ):
+            self.assertEqual(build.get_prior_feedback("1"), "")
+
+    def test_build_main_survives_failed_comments_call_on_retry(self):
+        # End-to-end: retry > 0 drives build.main() into get_prior_feedback,
+        # and a failed `gh issue view --json comments` call must not crash
+        # the whole run.
+        repo_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(repo_dir, ignore_errors=True))
+        _git(repo_dir, "init", "-q")
+        _git(repo_dir, "config", "user.email", "test@example.com")
+        _git(repo_dir, "config", "user.name", "Test")
+        (repo_dir / "file.txt").write_text("base\n", encoding="utf-8")
+        _git(repo_dir, "add", ".")
+        _git(repo_dir, "commit", "-q", "-m", "base")
+        _git(repo_dir, "branch", "-M", "main")
+
+        def _fake_run(cmd, **kwargs):
+            if cmd[0] == "git":
+                return subprocess.run(cmd, cwd=repo_dir, text=True, capture_output=True)
+            if cmd[0] == "gh" and cmd[-1] == ".labels[].name":
+                return SimpleNamespace(returncode=0, stdout="retry:1\n", stderr="")
+            if cmd[0] == "gh" and cmd[-1] == ".body":
+                return SimpleNamespace(returncode=0, stdout="Fix the widget.\n", stderr="")
+            if cmd[0] == "gh" and "--json" in cmd and "comments" in cmd:
+                return SimpleNamespace(returncode=1, stdout="", stderr="rate limited")
+            if cmd[0] == "claude":
+                (repo_dir / "file.txt").write_text("fixed\n", encoding="utf-8")
+                _git(repo_dir, "add", ".")
+                _git(repo_dir, "commit", "-q", "-m", "builder commit")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(lib, "run", side_effect=_fake_run), \
+             mock.patch.object(lib, "load_config", return_value={"FORBIDDEN_PATH_REGEX": "migrations/"}), \
+             mock.patch.object(lib, "bump_counter"), \
+             mock.patch.object(lib, "log_event"), \
+             mock.patch.object(sys, "argv", ["build.py", "1"]):
+            rc = build.main()
+
+        self.assertEqual(rc, 0)
+
+
 class RenderSinglePassSubstitutionTest(unittest.TestCase):
     """Tests for issue #39: render() used to substitute {{KEY}} placeholders
     via N sequential str.replace calls over a mutating string. If an
