@@ -186,5 +186,49 @@ class BuildInfraFailureTest(unittest.TestCase):
         self.assertNotIn("build_infra_failure", logged_events)
 
 
+class RenderSinglePassSubstitutionTest(unittest.TestCase):
+    """Tests for issue #39: render() used to substitute {{KEY}} placeholders
+    via N sequential str.replace calls over a mutating string. If an
+    earlier-substituted value (e.g. attacker/user-controlled ISSUE_BODY)
+    happened to contain the literal text of a later key's placeholder token,
+    that later iteration would expand it -- reinjecting content the issue
+    author never provided into their own rendered section."""
+
+    def test_placeholder_inside_earlier_value_is_not_expanded(self):
+        template = "ISSUE:{{ISSUE_BODY}}\nFEEDBACK:{{PRIOR_FEEDBACK}}"
+        values = {
+            "ISSUE_BODY": "Please fix this. {{PRIOR_FEEDBACK}}",
+            "PRIOR_FEEDBACK": "REASON: secret internal retry notes from a previous attempt",
+        }
+
+        out = build.render(template, values)
+
+        self.assertEqual(
+            out,
+            "ISSUE:Please fix this. {{PRIOR_FEEDBACK}}\n"
+            "FEEDBACK:REASON: secret internal retry notes from a previous attempt",
+        )
+        self.assertNotIn("secret internal retry notes", out.split("FEEDBACK:")[0])
+
+    def test_plain_substitution_still_works(self):
+        template = "{{A}}-{{B}}-{{C}}"
+        out = build.render(template, {"A": "1", "B": "2", "C": "3"})
+        self.assertEqual(out, "1-2-3")
+
+    def test_conditional_block_still_expands_before_substitution(self):
+        template = "{{#FLAG}}shown: {{FLAG}}{{/FLAG}}"
+        out = build.render(template, {"FLAG": "yes"})
+        self.assertEqual(out, "shown: yes")
+
+    def test_conditional_block_dropped_when_falsy(self):
+        template = "before{{#FLAG}}shown: {{FLAG}}{{/FLAG}}after"
+        out = build.render(template, {"FLAG": ""})
+        self.assertEqual(out, "beforeafter")
+
+    def test_unknown_placeholder_left_literal(self):
+        out = build.render("{{UNKNOWN}}", {"OTHER": "x"})
+        self.assertEqual(out, "{{UNKNOWN}}")
+
+
 if __name__ == "__main__":
     unittest.main()
