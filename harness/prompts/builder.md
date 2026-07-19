@@ -17,8 +17,15 @@ Instructions:
    that would already pass on the old, broken code does not count.
 3. Run the full test suite yourself and make sure it passes before
    finishing. Fix failures — do not report success with failing tests.
-4. Do not touch: {{FORBIDDEN_PATH_REGEX}}
-5. Keep the diff scoped to this issue only. Do not refactor unrelated code.
+4. If the issue is about output the harness itself generates at runtime
+   (a rendered prompt, a template, a generated message, etc.), a passing
+   unit test on the render/template logic is not sufficient proof. Trace
+   the actual call site(s) that produce that output in production and
+   confirm directly — by reading the code path or reproducing a real
+   invocation — that the fix is what actually runs, not just what the
+   test exercises in isolation.
+5. Do not touch: {{FORBIDDEN_PATH_REGEX}}
+6. Keep the diff scoped to this issue only. Do not refactor unrelated code.
    Before finishing, run `git diff --stat main` and confirm the total
    changed-lines count (insertions + deletions) is under 400 — the gate's
    MAX_DIFF_LINES limit. Unlike a Verifier rejection, a gate failure for an
@@ -26,8 +33,8 @@ Instructions:
    the spot. If the full fix would exceed the budget, implement only the
    smallest piece that resolves the issue and note the remaining scope in
    the PR body rather than including it in the diff.
-6. Commit your changes with a message referencing #{{ISSUE_NUMBER}}.
-7. Push the branch and open a pull request linking to the issue:
+7. Commit your changes with a message referencing #{{ISSUE_NUMBER}}.
+8. Push the branch and open a pull request linking to the issue:
    `git push -u origin {{BRANCH_NAME}}`, then
    `gh pr create --head {{BRANCH_NAME}} --base main --title "<concise title>" --body "Fixes #{{ISSUE_NUMBER}}\n\n<summary of the change>"`.
    Use "Fixes #{{ISSUE_NUMBER}}" (or "Closes #") verbatim in the body so
