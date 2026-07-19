@@ -39,6 +39,9 @@ def main() -> int:
         print(f"=== cycle {cycle}: scan ===")
         run_stage("scan.py")
 
+        print(f"=== cycle {cycle}: triage ===")
+        run_stage("triage.py")
+
         print(f"=== cycle {cycle}: work ===")
         issue_result = lib.run([
             "gh", "issue", "list", "--state", "open", "--label", "state:ready",

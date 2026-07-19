@@ -28,7 +28,10 @@ state:in-review   -> Builder done, waiting on gate + Verifier
 state:needs-human -> stuck, retries exhausted, or oscillation detected
 (closed)      -> Verifier approved, merged
 ```
-Plus a `retry:N` label tracking attempt count per issue.
+Plus a `retry:N` label tracking attempt count per issue, and a
+`risk:low`/`risk:high` label the Triager applies to every `state:triage`
+issue (see below) — `risk:low` issues are auto-promoted to `state:ready`;
+`risk:high` ones are left at `state:triage` for a human to promote.
 
 ## Files
 - `prompts/*.md` — the actual instructions given to each agent. Only the
@@ -39,8 +42,13 @@ Plus a `retry:N` label tracking attempt count per issue.
 - `scripts/gate.py` — deterministic pre-checks (no LLM). Must pass before
   the Verifier agent is even invoked. Importable (`check_gate()`) or
   runnable standalone.
-- `scripts/scan.py`, `build.py`, `verify.py`, `tune.py` — one `claude -p`
-  call each, scoped to a single job.
+- `scripts/scan.py`, `triage.py`, `build.py`, `verify.py`, `tune.py` —
+  one `claude -p` call each, scoped to a single job.
+- `scripts/triage.py` — classifies each `state:triage` issue's risk
+  (`risk:low`/`risk:high`) and auto-promotes `risk:low` ones to
+  `state:ready`. `risk:high` issues (anything touching agent tool
+  permissions, `FORBIDDEN_PATH_REGEX`, or the gate/overseer safety
+  checks themselves) are left for a human to review and promote.
 - `scripts/overseer.py` — reads `.harness/log.jsonl`, enforces global
   thresholds (including the human-reopen check), can write
   `.harness/halt.lock` to pause everything.
