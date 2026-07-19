@@ -26,7 +26,11 @@ def main() -> int:
     prompt += f"\n\nLOG DATA:\n{log_tail}"
 
     branch = f"tuner/{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
-    lib.run(["git", "checkout", "-B", branch, "main"])
+    checkout = lib.run(["git", "checkout", "-B", branch, "main"])
+    if checkout.returncode != 0:
+        detail = (checkout.stderr or checkout.stdout or "").strip()
+        lib.log_event("tune_checkout_failed", "-", {"branch": branch, "detail": detail[-2000:]})
+        return 1
 
     claude_result = lib.run(["claude", "-p", prompt, "--allowedTools", "Bash(git:*),Bash(gh:*),Read,Write,Edit"])
     lib.bump_counter("daily_claude_calls")
