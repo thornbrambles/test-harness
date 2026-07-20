@@ -63,10 +63,26 @@ def main() -> int:
         # Retries continue on the existing branch so commits accumulate
         # across attempts (needed for gate.py's oscillation check). Only
         # fall back to resetting from main if the branch doesn't exist yet.
-        if lib.run(["git", "checkout", branch]).returncode != 0:
-            lib.run(["git", "checkout", "-B", branch, "main"])
+        checkout = lib.run(["git", "checkout", branch])
+        if checkout.returncode != 0:
+            checkout = lib.run(["git", "checkout", "-B", branch, "main"])
     else:
-        lib.run(["git", "checkout", "-B", branch, "main"])
+        checkout = lib.run(["git", "checkout", "-B", branch, "main"])
+
+    if checkout.returncode != 0:
+        # HEAD is left wherever the last failed attempt found it (normally
+        # still main, since every prior stage returns HEAD there). Abort
+        # here rather than falling through with the Builder agent invoked
+        # on an unintended branch -- see issue #89.
+        detail = (checkout.stderr or checkout.stdout or "").strip()
+        lib.log_event(
+            "build_checkout_failed",
+            issue,
+            {"branch": branch, "retry": str(retry), "detail": detail[-2000:]},
+        )
+        lib.set_state_label(issue, "needs-human")
+        print(f"BUILD FAILED: could not check out {branch}")
+        return 1
 
     template = PROMPTS_DIR.joinpath("builder.md").read_text(encoding="utf-8")
     prompt = render(

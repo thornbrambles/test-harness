@@ -186,6 +186,79 @@ class BuildInfraFailureTest(unittest.TestCase):
         self.assertNotIn("build_infra_failure", logged_events)
 
 
+class BuildCheckoutFailureTest(unittest.TestCase):
+    """Tests for issue #89: neither `git checkout -B <branch> main` call was
+    checked for failure. If it silently failed, HEAD would stay wherever it
+    was (normally main, since every prior stage leaves it there) and
+    execution would fall through into invoking the Builder agent with full
+    Bash/commit access -- any commit it made would land directly on local
+    main. These tests assert build.main() instead detects the failed
+    checkout and aborts before claude is ever invoked, on both the
+    non-retry path and the retry-path fallback."""
+
+    def setUp(self):
+        self.repo_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.repo_dir, ignore_errors=True))
+
+        _git(self.repo_dir, "init", "-q")
+        _git(self.repo_dir, "config", "user.email", "test@example.com")
+        _git(self.repo_dir, "config", "user.name", "Test")
+        (self.repo_dir / "file.txt").write_text("base\n", encoding="utf-8")
+        _git(self.repo_dir, "add", ".")
+        _git(self.repo_dir, "commit", "-q", "-m", "base")
+        _git(self.repo_dir, "branch", "-M", "main")
+
+    def _fake_run(self, cmd, **kwargs):
+        if cmd[0] == "git" and cmd[1:3] == ["checkout", "-B"]:
+            # Simulate the checkout itself failing (locked index, transient
+            # git error, a worktree already holding that branch, etc.)
+            # without touching the real repo.
+            return SimpleNamespace(returncode=1, stdout="", stderr="fatal: could not create branch")
+        if cmd[0] == "git" and cmd[1:2] == ["checkout"]:
+            return subprocess.run(cmd, cwd=self.repo_dir, text=True, capture_output=True)
+        if cmd[0] == "gh" and cmd[-1] == ".labels[].name":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd[0] == "gh" and cmd[-1] == ".body":
+            return SimpleNamespace(returncode=0, stdout="Fix the widget.\n", stderr="")
+        if cmd[0] == "gh" and "comments" in cmd:
+            return SimpleNamespace(returncode=0, stdout='{"comments": []}', stderr="")
+        if cmd[0] == "claude":
+            self.fail("claude must not be invoked when the branch checkout failed")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def _run_build(self, argv):
+        with mock.patch.object(lib, "run", side_effect=self._fake_run), \
+             mock.patch.object(lib, "load_config", return_value={"FORBIDDEN_PATH_REGEX": "migrations/"}), \
+             mock.patch.object(lib, "bump_counter"), \
+             mock.patch.object(lib, "log_event") as mock_log, \
+             mock.patch.object(lib, "set_state_label") as mock_label, \
+             mock.patch.object(sys, "argv", argv):
+            rc = build.main()
+        return rc, mock_log, mock_label
+
+    def test_non_retry_checkout_failure_aborts_before_claude(self):
+        rc, mock_log, mock_label = self._run_build(["build.py", "1"])
+
+        self.assertEqual(rc, 1)
+        mock_label.assert_any_call("1", "needs-human")
+        logged_events = [c.args[0] for c in mock_log.call_args_list]
+        self.assertIn("build_checkout_failed", logged_events)
+        self.assertNotIn("build_complete", logged_events)
+
+    def test_retry_path_fallback_checkout_failure_aborts_before_claude(self):
+        # retry > 0 takes the `git checkout <branch>` path first, which
+        # fails in a fresh repo with no such branch, falling back to the
+        # `-B ... main` checkout that this test forces to fail too.
+        with mock.patch.object(lib, "get_retry_count", return_value=1):
+            rc, mock_log, mock_label = self._run_build(["build.py", "1"])
+
+        self.assertEqual(rc, 1)
+        mock_label.assert_any_call("1", "needs-human")
+        logged_events = [c.args[0] for c in mock_log.call_args_list]
+        self.assertIn("build_checkout_failed", logged_events)
+        self.assertNotIn("build_complete", logged_events)
+
+
 class RenderSinglePassSubstitutionTest(unittest.TestCase):
     """Tests for issue #39: render() used to substitute {{KEY}} placeholders
     via N sequential str.replace calls over a mutating string. If an
